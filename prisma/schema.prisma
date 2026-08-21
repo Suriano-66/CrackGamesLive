@@ -1,0 +1,49 @@
+// CrackGamesLive — schéma de base de données
+// Dev : SQLite (zéro installation). Prod : passe `provider` à "postgresql"
+// et mets une DATABASE_URL PostgreSQL dans le .env.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  // Rôle : "user" (membre / streamer), "support", "admin".
+  role         String   @default("user")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Facturation Stripe
+  stripeCustomerId       String?   @unique
+  stripeSubscriptionId   String?   @unique
+  plan                   String?   // "starter" | "creator" | "pro"
+  subscriptionStatus     String?   // "active" | "trialing" | "past_due" | "canceled" ...
+  currentPeriodEnd       DateTime?
+  // true = accès offert manuellement par un admin (hors Stripe).
+  manualAccess           Boolean   @default(false)
+  // Jeton secret pour les liens overlay OBS (unique, régénérable).
+  overlayToken           String?   @unique
+  // Nom d'utilisateur TikTok (@pseudo) dont on écoute le live.
+  tiktokUsername         String?
+}
+
+// Catalogue de jeux géré depuis le back-office.
+model Game {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  emoji       String   @default("🎮")
+  description String   @default("")
+  enabled     Boolean  @default(true)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
