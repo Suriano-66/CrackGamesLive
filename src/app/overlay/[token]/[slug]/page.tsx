@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { prisma } from "@/lib/prisma";
 import { hasActiveAccess } from "@/lib/access";
+import { getActiveLevel } from "@/lib/levels";
 import OverlayGame from "@/components/games/OverlayGame";
 
 // Overlay servi dans OBS : jamais mis en cache, jamais indexé.
@@ -105,10 +106,19 @@ export default async function OverlayPage({
   // Jeu implémenté : on rend le moteur du jeu (fond transparent pour OBS).
   const IMPLEMENTED = new Set(["grande-course"]);
   if (IMPLEMENTED.has(slug)) {
+    const activeLevel =
+      slug === "grande-course" ? await getActiveLevel("marble-race") : null;
     return (
       <>
         <style dangerouslySetInnerHTML={{ __html: TRANSPARENT_STYLE }} />
-        <OverlayGame slug={slug} />
+        <OverlayGame
+          slug={slug}
+          level={
+            activeLevel
+              ? { platforms: activeLevel.platforms, settings: activeLevel.settings }
+              : null
+          }
+        />
       </>
     );
   }

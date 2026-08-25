@@ -1,19 +1,35 @@
 // Moteur 3D de "La grande course" — Three.js + cannon-es.
-// Circuit sinueux : virages bankés, tremplins, un looping, skybox.
-// Module autonome (importé par le composant React ET testable en standalone).
+// NOUVEAU modèle : le circuit est une liste de PLATEFORMES libres
+//   { id, role:"track|start|finish|wall", pos:[x,y,z], size:[w,h,l], rot:[rx,ry,rz]°, color? }
+// placées/orientées/étirées dans l'éditeur 3D (façon Roblox).
+// Les billes apparaissent au-dessus de la plateforme "start" et l'arrivée
+// est la plateforme "finish". Tout est parfaitement lié (chaque plateforme
+// est une boîte de collision solide) : plus de trous sous les virages.
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 
 // ----- Paramètres -----
-const ROAD_W = 9; // largeur de la route
-const TILE = 4.2; // longueur d'une tuile
-const MARBLE_R = 0.42; // billes plus petites
+const MARBLE_R = 0.42;
 const MAX_LIVE = 150;
 const MAX_BALLS = 100;
 const RACE_MAX_MS = 90000;
 const INTERMISSION_MS = 8000;
-const CAM_SWITCH_MS = 5500;
-const DESCENT = 0.26; // pente de descente (radians)
+const CAM_SWITCH_MS = 7000;
+const D2R = Math.PI / 180;
+
+// Circuit de secours minimal (si aucune plateforme n'est fournie).
+const FALLBACK_PLATFORMS = [
+  { id: "s", role: "start", pos: [0, 16, 0], size: [14, 1, 12], rot: [16, 0, 0] },
+  { id: "t", role: "track", pos: [0, 9, 18], size: [14, 1, 24], rot: [16, 0, 0] },
+  { id: "f", role: "finish", pos: [0, 3, 36], size: [16, 1, 14], rot: [6, 0, 0] },
+];
+
+const ROLE_COLORS = {
+  track: 0x3a4670,
+  start: 0x2fbf6b,
+  finish: 0xffcf40,
+  wall: 0xff3c5f,
+};
 
 function marblesForGift(diamonds, count) {
   const v = Math.max(0, diamonds) * Math.max(1, count || 1);
@@ -32,12 +48,18 @@ function hashHue(s) {
 
 export function createMarbleRace3D(canvas, opts = {}) {
   const onState = opts.onState || (() => {});
+  const levelPlatforms =
+    opts.level && Array.isArray(opts.level.platforms) && opts.level.platforms.length
+      ? opts.level.platforms
+      : FALLBACK_PLATFORMS;
+  const settings = (opts.level && opts.level.settings) || {};
+  const cameraPref = settings.camera || "auto"; // auto|chase|front|side|top
   let disposed = false;
 
   // ----- Rendu -----
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 3000);
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 4000);
   camera.position.set(0, 30, -30);
 
   scene.add(new THREE.HemisphereLight(0xbcd6ff, 0x1a2030, 1.15));
@@ -73,11 +95,11 @@ export function createMarbleRace3D(canvas, opts = {}) {
     tex.mapping = THREE.EquirectangularReflectionMapping;
     tex.colorSpace = THREE.SRGBColorSpace;
     const sky = new THREE.Mesh(
-      new THREE.SphereGeometry(1400, 40, 20),
+      new THREE.SphereGeometry(1800, 40, 20),
       new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false }),
     );
     scene.add(sky);
-    scene.fog = new THREE.Fog(0x241a4a, 120, 460);
+    scene.fog = new THREE.Fog(0x241a4a, 160, 620);
   }
   buildSky();
 
@@ -88,10 +110,10 @@ export function createMarbleRace3D(canvas, opts = {}) {
   const matGround = new CANNON.Material("ground");
   const matBall = new CANNON.Material("ball");
   world.addContactMaterial(
-    new CANNON.ContactMaterial(matGround, matBall, { friction: 0.06, restitution: 0.2 }),
+    new CANNON.ContactMaterial(matGround, matBall, { friction: 0.16, restitution: 0.05 }),
   );
   world.addContactMaterial(
-    new CANNON.ContactMaterial(matBall, matBall, { friction: 0.02, restitution: 0.3 }),
+    new CANNON.ContactMaterial(matBall, matBall, { friction: 0.04, restitution: 0.2 }),
   );
 
   const S = {
@@ -100,10 +122,17 @@ export function createMarbleRace3D(canvas, opts = {}) {
     spawnQueue: [],
     trackMeshes: [],
     trackBodies: [],
-    nodes: [],
-    startNode: new THREE.Vector3(0, 40, 0),
+    // repères de spawn / arrivée
+    spawnFwd: new THREE.Vector3(0, 0, 1),
+    spawnUp: new THREE.Vector3(0, 1, 0),
+    spawnRight: new THREE.Vector3(1, 0, 0),
+    spawnBase: new THREE.Vector3(0, 16, 0),
+    spawnWid: 14,
+    spawnLen: 12,
+    finishCenter: null,
+    finishR: 6,
+    killY: -100,
     startDir: new THREE.Vector3(0, 0, 1),
-    finishY: 0,
     phase: "filling",
     phaseStart: 0,
     raceStart: 0,
@@ -116,7 +145,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     winner: null,
     connected: false,
     camLook: new THREE.Vector3(0, 0, 0),
-    camVel: new THREE.Vector3(0, 0, 1),
+    camDir: new THREE.Vector3(0, 0, 1),
   };
 
   function rnd() {
@@ -124,129 +153,35 @@ export function createMarbleRace3D(canvas, opts = {}) {
     return S.seed / 0x7fffffff;
   }
 
-  // ----- Génération du tracé (turtle + features) -----
-  function dirFromYawPitch(yaw, pitch) {
-    return new THREE.Vector3(
-      Math.cos(pitch) * Math.sin(yaw),
-      Math.sin(pitch),
-      Math.cos(pitch) * Math.cos(yaw),
-    ).normalize();
-  }
-  const GUP = new THREE.Vector3(0, 1, 0);
-  function bankedUp(forward, bank) {
-    // up perpendiculaire au forward, incliné (roll) de `bank`
-    let up = GUP.clone().addScaledVector(forward, -GUP.dot(forward)).normalize();
-    if (bank) {
-      const q = new THREE.Quaternion().setFromAxisAngle(forward, bank);
-      up.applyQuaternion(q);
-    }
-    return up;
-  }
-
-  function genPath() {
-    const nodes = [];
-    let pos = new THREE.Vector3(0, 46, 0);
-    let yaw = 0;
-    nodes.push({ p: pos.clone(), u: GUP.clone(), loop: false });
-
-    function segment(len, yawDelta, bank, loop) {
-      const steps = Math.max(1, Math.round(len / TILE));
-      const dyaw = yawDelta / steps;
-      for (let i = 0; i < steps; i++) {
-        yaw += dyaw;
-        const f = dirFromYawPitch(yaw, -DESCENT);
-        pos = pos.clone().addScaledVector(f, TILE);
-        nodes.push({ p: pos.clone(), u: bankedUp(f, bank), loop: !!loop });
-      }
-    }
-
-    function jump(len) {
-      // tremplin : monte puis redescend (bosse), sans trou
-      const steps = Math.max(3, Math.round(len / TILE));
-      for (let i = 0; i < steps; i++) {
-        const t = i / (steps - 1);
-        const pitch = Math.sin(t * Math.PI) * 0.5 - DESCENT * 0.4; // haut au milieu
-        const f = dirFromYawPitch(yaw, pitch);
-        pos = pos.clone().addScaledVector(f, TILE);
-        nodes.push({ p: pos.clone(), u: bankedUp(f, 0), loop: false });
-      }
-    }
-
-    function loopFeature(radius) {
-      // looping vertical dans le plan (h horizontal, u vertical)
-      const h = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw)).normalize();
-      const u = GUP.clone();
-      const center = pos.clone().addScaledVector(u, radius);
-      const N = 26;
-      for (let i = 1; i <= N; i++) {
-        const th = (i / N) * Math.PI * 2;
-        const p = center
-          .clone()
-          .addScaledVector(u, -Math.cos(th) * radius)
-          .addScaledVector(h, Math.sin(th) * radius);
-        // normale de route pointe vers le centre
-        const up = u
-          .clone()
-          .multiplyScalar(Math.cos(th))
-          .addScaledVector(h, -Math.sin(th))
-          .normalize();
-        nodes.push({ p: p.clone(), u: up, loop: true });
-        pos = p.clone();
-      }
-      // reprend tout droit après la boucle
-    }
-
-    // Séquence du circuit (assez long)
-    segment(34, 0, 0);
-    segment(30, 1.3, 0.5); // virage droite banké
-    segment(26, 0, 0);
-    jump(20); // tremplin
-    segment(26, -1.5, -0.55); // virage gauche banké
-    segment(24, 0, 0);
-    loopFeature(9); // LOOPING
-    segment(24, 0, 0);
-    segment(30, 1.4, 0.55); // virage droite
-    jump(18);
-    segment(28, -1.2, -0.5); // virage gauche
-    segment(26, 0, 0);
-    segment(28, 1.1, 0.45);
-    jump(20);
-    segment(40, 0, 0); // ligne d'arrivée
-    return nodes;
+  // ----- Matériaux plateformes -----
+  const matCache = new Map();
+  function platMat(role, color) {
+    const key = color || role || "track";
+    if (matCache.has(key)) return matCache.get(key);
+    const base = color
+      ? new THREE.Color(color)
+      : new THREE.Color(ROLE_COLORS[role] ?? ROLE_COLORS.track);
+    const m = new THREE.MeshStandardMaterial({
+      color: base,
+      roughness: role === "wall" ? 0.5 : 0.9,
+      metalness: role === "wall" ? 0.2 : 0.05,
+      emissive: role === "finish" ? new THREE.Color(0x4a3a00) : base.clone().multiplyScalar(0.05),
+    });
+    matCache.set(key, m);
+    return m;
   }
 
-  // ----- Construction géométrie depuis le tracé -----
-  const _right = new THREE.Vector3();
-  const _up2 = new THREE.Vector3();
-  const _mat = new THREE.Matrix4();
-  const _quat = new THREE.Quaternion();
-  const roadMat = new THREE.MeshStandardMaterial({ color: 0x2a3350, roughness: 0.9, metalness: 0.05 });
-  const railMat = new THREE.MeshStandardMaterial({ color: 0xff3c5f, roughness: 0.5, metalness: 0.2, emissive: 0x3a0a14 });
-
-  function orientedBox(w, h, l, center, forward, up, mat) {
-    _right.crossVectors(up, forward).normalize();
-    _up2.crossVectors(forward, _right).normalize();
-    _mat.makeBasis(_right, _up2, forward.clone().normalize());
-    _quat.setFromRotationMatrix(_mat);
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, l), mat);
-    mesh.position.copy(center);
-    mesh.quaternion.copy(_quat);
-    scene.add(mesh);
-    S.trackMeshes.push(mesh);
-    const body = new CANNON.Body({ mass: 0, material: matGround });
-    body.addShape(new CANNON.Box(new CANNON.Vec3(w / 2, h / 2, l / 2)));
-    body.position.set(center.x, center.y, center.z);
-    body.quaternion.set(_quat.x, _quat.y, _quat.z, _quat.w);
-    world.addBody(body);
-    S.trackBodies.push(body);
-    return { right: _right.clone(), up: _up2.clone() };
+  const _unit = new THREE.BoxGeometry(1, 1, 1);
+  const _e = new THREE.Euler();
+  const _q = new THREE.Quaternion();
+  function platQuat(rot) {
+    _e.set((rot[0] || 0) * D2R, (rot[1] || 0) * D2R, (rot[2] || 0) * D2R, "XYZ");
+    _q.setFromEuler(_e);
+    return _q;
   }
 
   function clearTrack() {
-    for (const m of S.trackMeshes) {
-      scene.remove(m);
-      m.geometry.dispose();
-    }
+    for (const m of S.trackMeshes) scene.remove(m);
     for (const b of S.trackBodies) world.removeBody(b);
     S.trackMeshes = [];
     S.trackBodies = [];
@@ -254,50 +189,123 @@ export function createMarbleRace3D(canvas, opts = {}) {
 
   function buildTrack() {
     clearTrack();
-    const nodes = genPath();
-    S.nodes = nodes;
-    S.startNode = nodes[0].p.clone();
-    S.startDir = nodes[1].p.clone().sub(nodes[0].p).normalize();
-    let minY = Infinity;
-    for (const n of nodes) if (n.p.y < minY) minY = n.p.y;
-    S.finishY = minY + 1.5;
+    const platforms = levelPlatforms;
+    let startPlat = null,
+      finishPlat = null,
+      highPlat = null,
+      lowPlat = null;
+    let minY = Infinity,
+      highY = -Infinity,
+      lowY = Infinity;
 
-    for (let i = 0; i < nodes.length - 1; i++) {
-      const a = nodes[i].p;
-      const b = nodes[i + 1].p;
-      const forward = b.clone().sub(a);
-      const len = forward.length() + 0.6;
-      forward.normalize();
-      const up = nodes[i].u.clone();
-      const center = a.clone().add(b).multiplyScalar(0.5);
-      const basis = orientedBox(ROAD_W, 0.8, len, center, forward, up, roadMat);
-      // rails
-      const railH = nodes[i].loop ? 1.4 : 1.9;
-      for (const s of [-1, 1]) {
-        const rc = center
-          .clone()
-          .addScaledVector(basis.right, (s * ROAD_W) / 2)
-          .addScaledVector(basis.up, railH / 2);
-        orientedBox(0.5, railH, len, rc, forward, up, railMat);
+    for (const pl of platforms) {
+      const size = pl.size || [10, 1, 10];
+      const pos = pl.pos || [0, 0, 0];
+      const q = platQuat(pl.rot || [0, 0, 0]);
+      const mesh = new THREE.Mesh(_unit, platMat(pl.role, pl.color));
+      mesh.scale.set(Math.max(0.2, size[0]), Math.max(0.2, size[1]), Math.max(0.2, size[2]));
+      mesh.position.set(pos[0], pos[1], pos[2]);
+      mesh.quaternion.copy(q);
+      scene.add(mesh);
+      S.trackMeshes.push(mesh);
+
+      const body = new CANNON.Body({ mass: 0, material: matGround });
+      body.addShape(
+        new CANNON.Box(
+          new CANNON.Vec3(
+            Math.max(0.1, size[0] / 2),
+            Math.max(0.1, size[1] / 2),
+            Math.max(0.1, size[2] / 2),
+          ),
+        ),
+      );
+      body.position.set(pos[0], pos[1], pos[2]);
+      body.quaternion.set(q.x, q.y, q.z, q.w);
+      world.addBody(body);
+      S.trackBodies.push(body);
+
+      if (pos[1] < minY) minY = pos[1];
+      if (pos[1] > highY) {
+        highY = pos[1];
+        highPlat = pl;
       }
+      if (pos[1] < lowY) {
+        lowY = pos[1];
+        lowPlat = pl;
+      }
+      if (pl.role === "start" && !startPlat) startPlat = pl;
+      if (pl.role === "finish" && !finishPlat) finishPlat = pl;
     }
+
+    // --- Repère de spawn depuis la plateforme de départ (ou la plus haute) ---
+    const sp = startPlat || highPlat || FALLBACK_PLATFORMS[0];
+    {
+      const q = platQuat(sp.rot || [0, 0, 0]);
+      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(q).normalize();
+      // direction de descente = gravité projetée sur la surface
+      let fwd = new THREE.Vector3(0, -1, 0);
+      fwd.addScaledVector(up, -fwd.dot(up));
+      if (fwd.lengthSq() < 1e-4) fwd = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+      fwd.normalize();
+      const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
+      const center = new THREE.Vector3(sp.pos[0], sp.pos[1], sp.pos[2]);
+      const topCenter = center.clone().addScaledVector(up, (sp.size ? sp.size[1] : 1) / 2);
+      S.spawnFwd = fwd;
+      S.spawnUp = up;
+      S.spawnRight = right;
+      S.spawnBase = topCenter;
+      S.spawnWid = sp.size ? sp.size[0] : 12;
+      S.spawnLen = sp.size ? sp.size[2] : 12;
+      S.startDir = fwd.clone();
+    }
+
+    // --- Arrivée : plateforme "finish" (ou la plus basse) ---
+    const fp = finishPlat || lowPlat;
+    if (fp) {
+      S.finishCenter = new THREE.Vector3(fp.pos[0], fp.pos[1], fp.pos[2]);
+      S.finishR = Math.max(fp.size ? fp.size[0] : 12, fp.size ? fp.size[2] : 12) / 2 + 2.5;
+    } else {
+      S.finishCenter = null;
+      S.finishR = 6;
+    }
+    S.killY = minY - 40;
+  }
+
+  // Progression : plus la bille est proche de l'arrivée, plus le score est haut.
+  function progressOf(pos) {
+    if (S.finishCenter) {
+      const dx = pos.x - S.finishCenter.x;
+      const dy = pos.y - S.finishCenter.y;
+      const dz = pos.z - S.finishCenter.z;
+      return -Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    return -pos.y;
   }
 
   // ----- Billes -----
   const ballGeo = new THREE.SphereGeometry(MARBLE_R, 14, 14);
   function spawnMarble(p) {
     if (S.marbles.length >= MAX_LIVE) return;
-    const off = new THREE.Vector3((rnd() - 0.5) * (ROAD_W - 2), 0, (rnd() - 0.5) * 3);
-    const start = S.startNode.clone().add(off).add(new THREE.Vector3(0, 3 + rnd() * 2, 0));
+    const fwd = S.spawnFwd,
+      up = S.spawnUp,
+      right = S.spawnRight,
+      base = S.spawnBase;
+    const lateral = (rnd() - 0.5) * Math.max(2, S.spawnWid - 2);
+    const backd = 1 + rnd() * Math.min(7, S.spawnLen * 0.42); // vers l'amont
+    const start = base
+      .clone()
+      .addScaledVector(fwd, -backd)
+      .addScaledVector(right, lateral)
+      .addScaledVector(up, 1.0 + rnd() * 0.9);
     const body = new CANNON.Body({
       mass: 1,
       material: matBall,
       shape: new CANNON.Sphere(MARBLE_R),
-      linearDamping: 0.01,
-      angularDamping: 0.15,
+      linearDamping: 0.04,
+      angularDamping: 0.3,
     });
     body.position.set(start.x, start.y, start.z);
-    body.velocity.set(S.startDir.x * 4, 0, S.startDir.z * 4);
+    body.velocity.set(fwd.x * 2, fwd.y * 2, fwd.z * 2);
     world.addBody(body);
     const col = new THREE.Color(p.color);
     const mesh = new THREE.Mesh(
@@ -425,6 +433,9 @@ export function createMarbleRace3D(canvas, opts = {}) {
     for (const p of S.players.values()) p.finishRank = null;
     removeAllMarbles();
     buildTrack();
+    S.camDir.set(S.startDir.x, 0, S.startDir.z);
+    if (S.camDir.lengthSq() < 0.001) S.camDir.set(0, 0, 1);
+    S.camDir.normalize();
     for (const p of S.players.values()) queueSpawns(p, p.ballCount);
     S.phase = S.players.size === 0 ? "filling" : "racing";
     S.phaseStart = now;
@@ -438,7 +449,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     S.winner = S.finishOrder[0] || null;
   }
 
-  // ----- Caméra qui suit le tracé -----
+  // ----- Caméra -----
   const _v = new THREE.Vector3();
   const _c = new THREE.Vector3();
   function packInfo() {
@@ -446,9 +457,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     _c.set(0, 0, 0);
     _v.set(0, 0, 0);
     let lead = null,
-      leadProg = -Infinity,
-      last = null,
-      lastProg = Infinity;
+      leadProg = -Infinity;
     for (const m of S.marbles) {
       if (m.finished) continue;
       _c.add(m.body.position);
@@ -456,60 +465,79 @@ export function createMarbleRace3D(canvas, opts = {}) {
       _v.y += m.body.velocity.y;
       _v.z += m.body.velocity.z;
       n++;
-      const prog = -m.body.position.y;
+      const prog = progressOf(m.body.position);
       if (prog > leadProg) {
         leadProg = prog;
         lead = m;
       }
-      if (prog < lastProg) {
-        lastProg = prog;
-        last = m;
-      }
     }
     if (!n) return null;
     _c.multiplyScalar(1 / n);
-    return { c: _c.clone(), v: _v.clone(), lead, last, n };
+    return { c: _c.clone(), v: _v.clone(), lead, n };
   }
-  const _down = new THREE.Vector3(0, 1, 0);
+  const AUTO_SEQ = ["chase", "front", "side", "chase", "top"];
+  const _side = new THREE.Vector3();
+  const _tan = new THREE.Vector3();
   function updateCamera(now) {
     let camPos = new THREE.Vector3(0, 70, -40);
     let look = new THREE.Vector3(0, 40, 6);
     const info = packInfo();
     if (info && (S.phase === "racing" || S.phase === "intermission")) {
-      // Direction HORIZONTALE de progression (évite que la caméra pointe le ciel)
-      let dir = info.v.clone();
-      dir.y = 0;
-      if (dir.lengthSq() < 0.5) dir = S.camVel.clone();
-      dir.normalize();
-      S.camVel.lerp(dir, 0.05);
-      S.camVel.y = 0;
-      if (S.camVel.lengthSq() < 0.01) S.camVel.set(0, 0, 1);
-      S.camVel.normalize();
-      const d = S.camVel;
+      const focusM = info.lead || null;
+      const c = info.c;
+      // direction = vitesse horizontale de la bille de tête (lissée → pas de secousse)
+      _tan.set(
+        focusM ? focusM.body.velocity.x : info.v.x,
+        0,
+        focusM ? focusM.body.velocity.z : info.v.z,
+      );
+      if (_tan.lengthSq() < 0.6) _tan.copy(S.camDir);
+      _tan.normalize();
+      S.camDir.lerp(_tan, 0.045);
+      S.camDir.y = 0;
+      if (S.camDir.lengthSq() < 0.001) S.camDir.set(0, 0, 1);
+      S.camDir.normalize();
+      const d = S.camDir;
+      _side.set(d.z, 0, -d.x).normalize();
 
-      if (S.phase === "racing" && now - S.camModeStart > CAM_SWITCH_MS) {
-        S.camMode = (S.camMode + 1) % 3;
-        S.camModeStart = now;
+      let mode = cameraPref;
+      if (mode === "auto") {
+        if (S.phase === "racing" && now - S.camModeStart > CAM_SWITCH_MS) {
+          S.camMode = (S.camMode + 1) % AUTO_SEQ.length;
+          S.camModeStart = now;
+        }
+        mode = AUTO_SEQ[S.camMode % AUTO_SEQ.length];
       }
-      // Toujours : derrière + au-dessus, regard vers l'avant ET vers le bas.
-      let back, up, ahead, down, center;
-      if (S.camMode === 1 && info.lead) {
-        center = info.lead.body.position;
-        back = 13; up = 11; ahead = 9; down = 5;
-      } else if (S.camMode === 2) {
-        center = info.c;
-        back = 30; up = 38; ahead = 8; down = 12;
+
+      if (mode === "front") {
+        camPos.copy(c).addScaledVector(d, 17).addScaledVector(_side, 5);
+        camPos.y = c.y + 9;
+        look.copy(c).addScaledVector(d, -2);
+        look.y = c.y - 1;
+      } else if (mode === "side") {
+        camPos.copy(c).addScaledVector(_side, 26).addScaledVector(d, 2);
+        camPos.y = c.y + 11;
+        look.copy(c);
+        look.y = c.y - 2;
+      } else if (mode === "top") {
+        camPos.copy(c).addScaledVector(d, -6);
+        camPos.y = c.y + 46;
+        look.copy(c).addScaledVector(d, 4);
+        look.y = c.y - 6;
       } else {
-        center = info.c;
-        back = 24; up = 20; ahead = 12; down = 7;
+        camPos.copy(c).addScaledVector(d, -23);
+        camPos.y = c.y + 19;
+        look.copy(c).addScaledVector(d, 12);
+        look.y = c.y - 6;
       }
-      camPos.copy(center).addScaledVector(d, -back);
-      camPos.y = center.y + up;
-      look.copy(center).addScaledVector(d, ahead);
-      look.y = center.y - down;
+    } else {
+      // pas de billes : cadre le haut du circuit
+      camPos.copy(S.spawnBase).addScaledVector(S.spawnFwd, -14);
+      camPos.y = S.spawnBase.y + 16;
+      look.copy(S.spawnBase).addScaledVector(S.spawnFwd, 10);
     }
-    camera.position.lerp(camPos, 0.06);
-    S.camLook.lerp(look, 0.08);
+    camera.position.lerp(camPos, 0.05);
+    S.camLook.lerp(look, 0.06);
     camera.lookAt(S.camLook);
   }
 
@@ -519,9 +547,13 @@ export function createMarbleRace3D(canvas, opts = {}) {
     const racing = [...S.players.values()]
       .filter((p) => !aset.has(p.id))
       .map((p) => {
-        let best = Infinity;
-        for (const m of S.marbles) if (m.playerId === p.id && m.body.position.y < best) best = m.body.position.y;
-        return { p, prog: -best };
+        let best = -Infinity;
+        for (const m of S.marbles)
+          if (m.playerId === p.id) {
+            const pr = progressOf(m.body.position);
+            if (pr > best) best = pr;
+          }
+        return { p, prog: best };
       })
       .sort((a, b) => b.prog - a.prog)
       .map((o) => o.p);
@@ -579,18 +611,34 @@ export function createMarbleRace3D(canvas, opts = {}) {
       const bp = m.body.position;
       m.mesh.position.set(bp.x, bp.y, bp.z);
       m.mesh.quaternion.set(m.body.quaternion.x, m.body.quaternion.y, m.body.quaternion.z, m.body.quaternion.w);
-      if (bp.y <= S.finishY) {
-        m.finished = true;
-        const p = S.players.get(m.playerId);
-        if (p && p.finishRank == null) {
-          p.finishRank = S.finishOrder.length + 1;
-          S.finishOrder.push(p);
-        }
-        world.removeBody(m.body);
-        scene.remove(m.mesh);
-        continue;
+      // Plafond de vitesse : évite l'éjection des billes dans les virages.
+      const vel = m.body.velocity;
+      const sp = Math.hypot(vel.x, vel.y, vel.z);
+      if (sp > 24) {
+        const kk = 24 / sp;
+        vel.x *= kk;
+        vel.y *= kk;
+        vel.z *= kk;
       }
-      if (bp.y < S.finishY - 30) {
+      // Arrivée
+      if (S.finishCenter) {
+        const dx = bp.x - S.finishCenter.x;
+        const dy = bp.y - S.finishCenter.y;
+        const dz = bp.z - S.finishCenter.z;
+        if (dx * dx + dy * dy + dz * dz < S.finishR * S.finishR) {
+          m.finished = true;
+          const p = S.players.get(m.playerId);
+          if (p && p.finishRank == null) {
+            p.finishRank = S.finishOrder.length + 1;
+            S.finishOrder.push(p);
+          }
+          world.removeBody(m.body);
+          scene.remove(m.mesh);
+          continue;
+        }
+      }
+      // Chute hors circuit
+      if (bp.y < S.killY) {
         m.finished = true;
         world.removeBody(m.body);
         scene.remove(m.mesh);
@@ -610,11 +658,12 @@ export function createMarbleRace3D(canvas, opts = {}) {
     // Avatars sur la bille de tête de chaque joueur
     const lead = new Map();
     for (const m of S.marbles) {
+      const prog = progressOf(m.body.position);
       const prev = lead.get(m.playerId);
-      if (!prev || m.body.position.y < prev.body.position.y) lead.set(m.playerId, m);
+      if (!prev || prog > prev.prog) lead.set(m.playerId, { m, prog });
     }
     for (const [, entry] of avatarCache) entry.sprite.visible = false;
-    for (const [pid, m] of lead) {
+    for (const [pid, o] of lead) {
       const p = S.players.get(pid);
       if (!p) continue;
       let a = avatarTexture(p);
@@ -624,7 +673,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
         a = avatarTexture(p);
       }
       a.sprite.visible = true;
-      a.sprite.position.set(m.body.position.x, m.body.position.y + 1.7, m.body.position.z);
+      a.sprite.position.set(o.m.body.position.x, o.m.body.position.y + 1.7, o.m.body.position.z);
     }
 
     updateCamera(now);
@@ -644,6 +693,23 @@ export function createMarbleRace3D(canvas, opts = {}) {
   }
   function setConnected(v) {
     S.connected = v;
+  }
+  function getDebug() {
+    let minY = Infinity,
+      maxY = -Infinity;
+    for (const m of S.marbles) {
+      const y = m.body.position.y;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    return {
+      phase: S.phase,
+      live: S.marbles.length,
+      finished: S.finishOrder.length,
+      killY: S.killY,
+      minY: S.marbles.length ? minY : null,
+      maxY: S.marbles.length ? maxY : null,
+    };
   }
   function resize() {
     const w = canvas.clientWidth || canvas.width;
@@ -674,5 +740,5 @@ export function createMarbleRace3D(canvas, opts = {}) {
   window.addEventListener("resize", resize);
   raf = requestAnimationFrame(frame);
 
-  return { handleEvent, setConnected, resize, dispose };
+  return { handleEvent, setConnected, resize, dispose, getDebug };
 }

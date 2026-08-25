@@ -35,6 +35,19 @@ model User {
   tiktokUsername         String?
 }
 
+// Niveaux créés dans l'éditeur (data-driven).
+model Level {
+  id        String   @id @default(cuid())
+  gameType  String   @default("marble-race")
+  name      String
+  data      String // JSON : { pieces: [...] }
+  active    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([gameType, active])
+}
+
 // Catalogue de jeux géré depuis le back-office.
 model Game {
   id          String   @id @default(cuid())

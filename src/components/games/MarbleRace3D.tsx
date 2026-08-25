@@ -49,9 +49,11 @@ function Avatar({
 export default function MarbleRace3D({
   wsUrl,
   demo,
+  level,
 }: {
   wsUrl?: string | null;
   demo?: boolean;
+  level?: { platforms: unknown[]; settings?: Record<string, unknown> } | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const engineRef = useRef<{
@@ -60,6 +62,13 @@ export default function MarbleRace3D({
     dispose: () => void;
   } | null>(null);
   const [st, setSt] = useState<GameState | null>(null);
+  const levelRef = useRef(level);
+  levelRef.current = level;
+  // Recrée le moteur quand le niveau (plateformes ou réglages) change.
+  const levelKey = JSON.stringify({
+    p: level?.platforms ?? "default",
+    s: level?.settings ?? null,
+  });
 
   const { connected } = useGameFeed({
     wsUrl,
@@ -79,6 +88,7 @@ export default function MarbleRace3D({
       if (!alive || !canvasRef.current) return;
       engine = mod.createMarbleRace3D(canvasRef.current, {
         onState: (s: GameState) => setSt(s),
+        level: levelRef.current,
       });
       engineRef.current = engine as never;
     })();
@@ -87,7 +97,8 @@ export default function MarbleRace3D({
       engine?.dispose();
       engineRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [levelKey]);
 
   const phase = st?.phase ?? "filling";
   const board = st?.board ?? [];
