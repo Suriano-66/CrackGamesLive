@@ -4,7 +4,13 @@
 // façon éditeur type Roblox. Chaque plateforme :
 //   { id, role, pos:[x,y,z], size:[w,h,l], rot:[rx,ry,rz] (degrés), color? }
 
-export type PlatformRole = "track" | "start" | "finish" | "wall";
+// Rôles de la course de billes. Les autres jeux déclarent les leurs (voir
+// gameTypes.teamWar.ts) : le type reste ouvert pour ne pas avoir à toucher ce
+// fichier à chaque nouveau jeu.
+import { TEAM_WAR } from "./gameTypes.teamWar";
+
+export type MarbleRole = "track" | "start" | "finish" | "wall";
+export type PlatformRole = MarbleRole | (string & {});
 
 export interface Platform {
   id: string;
@@ -38,7 +44,11 @@ export const ROLES: RoleDef[] = [
 ];
 
 export function roleDef(role: string): RoleDef {
-  return ROLES.find((r) => r.role === role) ?? ROLES[0];
+  for (const gt of Object.values(GAME_TYPES)) {
+    const found = gt.roles.find((r) => r.role === role);
+    if (found) return found;
+  }
+  return ROLES[0];
 }
 
 // ----- Génération du circuit par défaut (départ → chute → virage → arrivée) -----
@@ -130,6 +140,7 @@ const MARBLE_RACE: GameTypeDef = {
 
 export const GAME_TYPES: Record<string, GameTypeDef> = {
   "marble-race": MARBLE_RACE,
+  "team-war": TEAM_WAR,
 };
 
 export function getGameType(id: string): GameTypeDef | undefined {

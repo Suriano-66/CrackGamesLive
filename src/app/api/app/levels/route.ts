@@ -22,7 +22,8 @@ export async function GET(req: Request) {
   }
   const rows = await prisma.level.findMany({
     orderBy: [{ active: "desc" }, { updatedAt: "desc" }],
-    select: { id: true, name: true, data: true, active: true },
+    // gameType est indispensable : l'app Streamer choisit le moteur avec.
+    select: { id: true, name: true, data: true, active: true, gameType: true },
   });
   return NextResponse.json({ levels: rows });
 }
