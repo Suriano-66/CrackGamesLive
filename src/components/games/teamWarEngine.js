@@ -23,9 +23,8 @@ const MAX_PER_PLAYER = 25;     // combattants max par viewer
 const ROUND_MAX_MS = 90000;    // durée max d'une manche
 const INTERMISSION_MS = 9000;  // pause entre deux manches
 const COUNTDOWN_MS = 3000;     // 3 · 2 · 1 · BAGARRE
-const MIN_PLAYERS = 2;
-const SPAWN_PER_TICK = 2;
-const ROSTER_DECAY = 0.5;      // part de l'effectif reconduite à la manche suivante
+const MIN_PER_TEAM = 3;        // joueurs requis DANS CHAQUE CAMP pour un départ auto
+const SPAWN_PER_TICK = 4;      // combattants sortis de la file par frame (compte à rebours)
 const D2R = Math.PI / 180;
 
 // ----- Combat -----
@@ -41,6 +40,20 @@ const WALK_SPEED = 5.6;        // vitesse de marche visée (m/s)
 const WALK_ACCEL = 7;          // vivacité de la mise en vitesse
 const STUN_MS = 260;           // temps où l'on subit le recul sans se rediriger
 const RETARGET_MS = 500;       // fréquence de recherche d'une nouvelle cible
+
+// ----- Rig de caméra -----
+// Deux étages d'amortissement, tous deux indépendants du nombre d'images par
+// seconde (exp(-dt/tau) et non un lerp à coefficient fixe) : la cible brute est
+// d'abord lissée, puis la caméra suit cette cible lissée. Une zone morte et un
+// plafond de vitesse empêchent tout à-coup — c'est ce qui distingue un plan de
+// diffusion d'une caméra qui saute sur chaque nouvel arrivant.
+const CAM_AIM_TAU = 0.85;      // lissage de la cible
+const CAM_LOOK_TAU = 0.45;     // lissage du point regardé
+const CAM_POS_TAU = 0.7;       // lissage de la position
+const CAM_DEADZONE = 1.8;      // sous ce déplacement, la cible ne bouge pas
+const CAM_AIM_MAX_SPEED = 13;  // m/s : plafond de déplacement de la cible
+const CAM_DIST_TAU = 1.4;      // lissage de la distance de cadrage
+const CAM_MIN_SHOT_MS = 6500;  // durée minimale d'un plan
 const KO_FALL_MS = 380;        // durée de la chute
 const KO_FADE_MS = 900;        // disparition après la chute
 
@@ -258,6 +271,11 @@ export function createTeamWar3D(canvas, opts = {}) {
     camMode: 0,
     camModeStart: 0,
     camLook: new THREE.Vector3(0, 0, 0),
+    camAim: new THREE.Vector3(0, 0, 0),   // cible lissée (zone morte + plafond)
+    camDist: 26,                          // distance de cadrage lissée
+    camCut: true,                         // vrai = coupe franche (pas de glissé)
+    camLastMode: "",
+    camHold: new THREE.Vector3(0, 0, 0),  // dernier point connu en mode focus
     focusPlayerId: null,
     lastState: 0,
     seed: 11,
@@ -647,8 +665,9 @@ export function createTeamWar3D(canvas, opts = {}) {
     const p = ensurePlayer(id, name, avatar);
     const n = fightersForGift(Number(diamonds) || 1, Number(count) || 1);
     p.sent += n;
+    // Le cadeau alimente TOUJOURS l'effectif de la prochaine manche, jamais la
+    // manche en cours : une fois lancée, plus personne n'entre sur le terrain.
     p.roster = Math.min(MAX_PER_PLAYER, p.roster + n);
-    queueSpawns(p, n);
   }
   function handleEvent(e) {
     if (!e) return;
@@ -847,17 +866,26 @@ export function createTeamWar3D(canvas, opts = {}) {
     }
     return { r, b };
   }
-  function teamsReady() {
+  // Joueurs en attente (ayant offert) par camp.
+  function queuedCounts() {
     let r = 0,
-      b = 0,
-      n = 0;
+      b = 0;
     for (const p of S.players.values()) {
       if (p.roster <= 0) continue;
-      n++;
       if (p.team === "rouge") r++;
       else b++;
     }
-    return n >= MIN_PLAYERS && r >= 1 && b >= 1;
+    return { r, b };
+  }
+  // Départ automatique : il faut MIN_PER_TEAM joueurs dans CHAQUE camp.
+  function teamsReady() {
+    const { r, b } = queuedCounts();
+    return r >= MIN_PER_TEAM && b >= MIN_PER_TEAM;
+  }
+  // Départ manuel (bouton du panneau de contrôle) : un joueur par camp suffit.
+  function canForceStart() {
+    const { r, b } = queuedCounts();
+    return r >= 1 && b >= 1;
   }
   function startCountdown(now) {
     S.phase = "countdown";
@@ -866,10 +894,15 @@ export function createTeamWar3D(canvas, opts = {}) {
     S.winner = null;
     S.ko = { rouge: 0, bleu: 0 };
     removeAllFighters();
+    // On engage l'effectif accumulé, puis on le remet à zéro : pour jouer la
+    // manche SUIVANTE, il faudra renvoyer un cadeau.
     for (const p of S.players.values()) {
-      p.roster = Math.min(MAX_PER_PLAYER, Math.ceil(p.roster * ROSTER_DECAY));
-      if (p.roster > 0) queueSpawns(p, p.roster);
+      p.fielded = p.roster;
+      p.kills = 0;
+      p.roster = 0;
+      if (p.fielded > 0) queueSpawns(p, p.fielded);
     }
+    S.camCut = true;
   }
   function startBattle(now) {
     S.phase = "battle";
@@ -896,10 +929,26 @@ export function createTeamWar3D(canvas, opts = {}) {
           mvp: mvp ? { name: mvp.name, kills: mvp.kills, sent: mvp.sent } : null,
         }
       : { team: null, label: "Égalité", color: "#dfe6ff", draw: true, mvp: null };
+    S.camCut = true;
+  }
+
+  // Les joueurs de la manche écoulée sortent de la partie : seuls restent ceux
+  // qui ont offert PENDANT la manche (leur cadeau les inscrit pour la suivante).
+  function purgePlayers() {
+    for (const [id, p] of [...S.players]) {
+      if (p.roster > 0) {
+        p.fielded = 0;
+        p.alive = 0;
+        continue;
+      }
+      S.players.delete(id);
+      dropLabel(id);
+      dropFace(id);
+    }
   }
   function tickPhases(now) {
     if (S.phase === "filling") {
-      if (teamsReady() && S.autoRace) startCountdown(now);
+      if (S.autoRace && teamsReady()) startCountdown(now);
       return;
     }
     if (S.phase === "countdown") {
@@ -908,7 +957,7 @@ export function createTeamWar3D(canvas, opts = {}) {
     }
     if (S.phase === "battle") {
       const { r, b } = teamCounts();
-      // On attend que les deux camps soient arrivés avant de pouvoir conclure.
+      // On attend que tout le monde soit entré avant de pouvoir conclure.
       const settled = now - S.roundStart > 1500 && S.spawnQueue.length === 0;
       if (settled && r === 0 && b === 0) return endBattle(now, null);
       if (settled && r === 0) return endBattle(now, "bleu");
@@ -920,13 +969,13 @@ export function createTeamWar3D(canvas, opts = {}) {
     }
     if (S.phase === "intermission") {
       if (now - S.phaseStart >= INTERMISSION_MS) {
-        if (S.autoRace && teamsReady()) startCountdown(now);
-        else {
-          S.phase = "filling";
-          S.phaseStart = now;
-          S.winner = null;
-          removeAllFighters();
-        }
+        // Fin de la célébration : on retire les joueurs de la manche écoulée.
+        purgePlayers();
+        S.phase = "filling";
+        S.phaseStart = now;
+        S.winner = null;
+        removeAllFighters();
+        S.camCut = true;
       }
     }
   }
@@ -1006,67 +1055,125 @@ export function createTeamWar3D(canvas, opts = {}) {
     return Math.max(5, Math.sqrt(m));
   }
   const CAM_CYCLE = ["side", "close", "high"];
-  const CAM_SWITCH_MS = 7500;
   const _camPos = new THREE.Vector3();
   const _camLook = new THREE.Vector3();
   const _side = new THREE.Vector3();
+  const _tmpA = new THREE.Vector3();
   function sideVector() {
     return _side.set(-S.axis.z, 0, S.axis.x).normalize();
   }
+
+  // Amortissement indépendant du framerate : à tau constant, le résultat est le
+  // même à 30 ou à 144 images/seconde (un lerp à coefficient fixe, lui, va deux
+  // fois plus vite quand le framerate double).
+  function damp(cur, target, tau, dt) {
+    cur.lerp(target, 1 - Math.exp(-dt / Math.max(0.001, tau)));
+    return cur;
+  }
+  function dampNum(cur, target, tau, dt) {
+    return cur + (target - cur) * (1 - Math.exp(-dt / Math.max(0.001, tau)));
+  }
+
+  // Cible paresseuse : zone morte (les micro-mouvements ne bougent pas la
+  // caméra) + plafond de vitesse (une cible qui saute à l'autre bout de l'arène
+  // ne provoque pas de coup de fouet).
+  function updateAim(raw, dt) {
+    _tmpA.copy(raw).sub(S.camAim);
+    const dist = _tmpA.length();
+    if (dist < CAM_DEADZONE) return S.camAim;
+    _tmpA.multiplyScalar((dist - CAM_DEADZONE) / dist);
+    _tmpA.multiplyScalar(1 - Math.exp(-dt / CAM_AIM_TAU));
+    const maxStep = CAM_AIM_MAX_SPEED * dt;
+    if (_tmpA.length() > maxStep) _tmpA.setLength(maxStep);
+    S.camAim.add(_tmpA);
+    return S.camAim;
+  }
+
   function updateCamera(now) {
+    const dt = S.frameDt;
     let mode = S.camOverride || cameraPref || "auto";
     if (mode === "auto") {
-      if (now - S.camModeStart > CAM_SWITCH_MS) {
+      // On ne change de plan qu'en pleine bataille, et jamais avant la durée
+      // minimale : des coupes trop fréquentes donnent un rendu amateur.
+      if (S.phase === "battle" && now - S.camModeStart > CAM_MIN_SHOT_MS) {
         S.camMode = (S.camMode + 1) % CAM_CYCLE.length;
         S.camModeStart = now;
+        S.camCut = true;
       }
       mode = CAM_CYCLE[S.camMode];
     }
-    if (mode === "free") return updateFree();
+    if (mode === "free") {
+      updateFree();
+      S.camLastMode = mode;
+      return;
+    }
+    // Changement de plan = coupe franche, pas un long travelling à travers la
+    // carte (c'est ce qui donnait cette impression de caméra qui « part »).
+    if (mode !== S.camLastMode) {
+      S.camCut = true;
+      S.camLastMode = mode;
+    }
 
-    const hot = hotspot().clone();
-    const side = sideVector().clone();
-    const span = S.span;
-    // Distance de cadrage : de quoi contenir la mêlée, jamais plus.
-    const rad = meleeRadius(hot);
-    const dist = Math.min(span * 0.95, Math.max(13, rad * 1.9 + 9));
-
+    // --- point d'intérêt brut ---
+    let raw;
     if (mode === "focus" && S.focusPlayerId) {
-      const pts = S.fighters.filter((x) => x.playerId === S.focusPlayerId && !x.ko);
-      if (pts.length) {
-        _camLook.set(0, 0, 0);
-        for (const x of pts) _camLook.add(new THREE.Vector3(x.body.position.x, x.body.position.y + 1.2, x.body.position.z));
-        _camLook.multiplyScalar(1 / pts.length);
-        _camPos.copy(_camLook).addScaledVector(side, 9).add(new THREE.Vector3(0, 5.5, 0));
-      } else {
-        _camLook.copy(hot).add(new THREE.Vector3(0, 1.2, 0));
-        _camPos.copy(hot).addScaledVector(side, dist).add(new THREE.Vector3(0, dist * 0.5, 0));
+      const own = S.fighters.filter((x) => x.playerId === S.focusPlayerId && !x.ko);
+      if (own.length) {
+        _tmpA.set(0, 0, 0);
+        for (const x of own) _tmpA.add(new THREE.Vector3(x.body.position.x, x.body.position.y, x.body.position.z));
+        _tmpA.multiplyScalar(1 / own.length);
+        S.camHold.copy(_tmpA);
       }
+      // plus aucun combattant vivant : on reste sur le dernier point connu
+      raw = S.camHold;
+    } else {
+      raw = hotspot();
+      S.camHold.copy(raw);
+    }
+    const aim = updateAim(raw, dt);
+
+    // --- distance de cadrage, elle aussi lissée ---
+    const wantDist =
+      mode === "focus"
+        ? 11
+        : Math.min(S.span * 0.95, Math.max(13, meleeRadius(aim) * 1.9 + 9));
+    S.camDist = dampNum(S.camDist, wantDist, CAM_DIST_TAU, dt);
+    const dist = S.camDist;
+    const side = sideVector().clone();
+
+    if (mode === "focus") {
+      _camLook.copy(aim).add(new THREE.Vector3(0, 1.1, 0));
+      _camPos.copy(aim).addScaledVector(side, dist).add(new THREE.Vector3(0, dist * 0.55, 0));
     } else if (mode === "top") {
-      _camLook.copy(hot);
-      _camPos.copy(hot).add(new THREE.Vector3(0, dist * 1.35, 0)).addScaledVector(S.axis, -0.001);
+      _camLook.copy(aim);
+      _camPos.copy(aim).add(new THREE.Vector3(0, dist * 1.35, 0)).addScaledVector(S.axis, -0.001);
     } else if (mode === "front") {
-      // dans l'axe des deux camps : on voit les deux vagues se percuter
-      _camLook.copy(hot).add(new THREE.Vector3(0, 1.4, 0));
-      _camPos.copy(hot).addScaledVector(S.axis, -dist * 1.15).add(new THREE.Vector3(0, dist * 0.42, 0));
+      _camLook.copy(aim).add(new THREE.Vector3(0, 1.4, 0));
+      _camPos.copy(aim).addScaledVector(S.axis, -dist * 1.15).add(new THREE.Vector3(0, dist * 0.42, 0));
     } else if (mode === "high") {
-      _camLook.copy(hot);
-      _camPos.copy(hot).addScaledVector(side, dist * 0.5).add(new THREE.Vector3(0, dist * 1.05, 0));
+      _camLook.copy(aim);
+      _camPos.copy(aim).addScaledVector(side, dist * 0.5).add(new THREE.Vector3(0, dist * 1.05, 0));
     } else if (mode === "close") {
-      // caméra d'épaule, collée à la mêlée : c'est là qu'on voit les coups
-      _camLook.copy(hot).add(new THREE.Vector3(0, 1.2, 0));
+      _camLook.copy(aim).add(new THREE.Vector3(0, 1.2, 0));
       _camPos
-        .copy(hot)
+        .copy(aim)
         .addScaledVector(side, Math.max(9, dist * 0.5))
         .addScaledVector(S.axis, dist * 0.12)
         .add(new THREE.Vector3(0, Math.max(4.5, dist * 0.3), 0));
     } else {
-      // "side" : la mêlée de profil, cadrée au plus juste (portrait 9:16)
-      _camLook.copy(hot).add(new THREE.Vector3(0, 1.3, 0));
-      _camPos.copy(hot).addScaledVector(side, dist).add(new THREE.Vector3(0, dist * 0.52, 0));
+      _camLook.copy(aim).add(new THREE.Vector3(0, 1.3, 0));
+      _camPos.copy(aim).addScaledVector(side, dist).add(new THREE.Vector3(0, dist * 0.52, 0));
     }
-    camera.position.lerp(_camPos, 0.055);
-    S.camLook.lerp(_camLook, 0.09);
+
+    if (S.camCut) {
+      S.camCut = false;
+      S.camAim.copy(raw);
+      camera.position.copy(_camPos);
+      S.camLook.copy(_camLook);
+    } else {
+      damp(camera.position, _camPos, CAM_POS_TAU, dt);
+      damp(S.camLook, _camLook, CAM_LOOK_TAU, dt);
+    }
     camera.lookAt(S.camLook);
   }
 
@@ -1121,7 +1228,10 @@ export function createTeamWar3D(canvas, opts = {}) {
     let obj = hits[0].object;
     while (obj && !S.fighters.some((f) => f.group === obj)) obj = obj.parent;
     const found = S.fighters.find((f) => f.group === obj);
-    if (found) onPick(found.playerId);
+    if (found) {
+      focusPlayer(found.playerId);
+      onPick(found.playerId);
+    }
   }
 
   // ----- Étiquettes : une par joueur, sur son combattant le plus avancé -----
@@ -1199,6 +1309,7 @@ export function createTeamWar3D(canvas, opts = {}) {
     if (S.phase === "battle") timer = Math.max(0, Math.ceil((ROUND_MAX_MS - (now - S.roundStart)) / 1000));
     if (S.phase === "countdown") count = Math.max(1, Math.ceil((COUNTDOWN_MS - (now - S.phaseStart)) / 1000));
     const { r, b } = teamCounts();
+    const q = queuedCounts();
     onState({
       phase: S.phase,
       timer,
@@ -1208,8 +1319,9 @@ export function createTeamWar3D(canvas, opts = {}) {
       progress: forceBalance(),
       winner: S.winner,
       board: computeBoard(8),
-      rouge: Object.assign(teamStats("rouge"), { standing: r }),
-      bleu: Object.assign(teamStats("bleu"), { standing: b }),
+      rouge: Object.assign(teamStats("rouge"), { standing: r, queued: q.r }),
+      bleu: Object.assign(teamStats("bleu"), { standing: b, queued: q.b }),
+      needPerTeam: MIN_PER_TEAM,
       live: S.fighters.length,
     });
   }
@@ -1229,6 +1341,8 @@ export function createTeamWar3D(canvas, opts = {}) {
       balance: Math.round(forceBalance() * 100) / 100,
       fps: S.fps,
       killY: S.killY,
+      cam: [camera.position.x, camera.position.y, camera.position.z].map((v) => Math.round(v * 100) / 100),
+      camMode: S.camLastMode,
       // Sonde utile depuis la console développeur du Studio.
       sample: S.fighters.slice(0, 2).map((f) => ({
         team: f.team,
@@ -1251,14 +1365,17 @@ export function createTeamWar3D(canvas, opts = {}) {
     }
   }
   function focusPlayer(id) {
+    const changed = (id || null) !== S.focusPlayerId;
     S.focusPlayerId = id || null;
     S.camOverride = id ? "focus" : null;
+    if (changed) S.camCut = true; // on coupe sur le joueur au lieu d'y glisser
   }
   function getBoard() {
     return computeBoard(20);
   }
   function getInfo() {
     const { r, b } = teamCounts();
+    const q = queuedCounts();
     return {
       phase: S.phase,
       players: S.players.size,
@@ -1267,14 +1384,21 @@ export function createTeamWar3D(canvas, opts = {}) {
       camMode: S.camOverride || cameraPref,
       focusPlayerId: S.focusPlayerId,
       progress: forceBalance(),
-      rouge: Object.assign(teamStats("rouge"), { standing: r }),
-      bleu: Object.assign(teamStats("bleu"), { standing: b }),
+      rouge: Object.assign(teamStats("rouge"), { standing: r, queued: q.r }),
+      bleu: Object.assign(teamStats("bleu"), { standing: b, queued: q.b }),
+      needPerTeam: MIN_PER_TEAM,
+      canStart: canForceStart(),
       teamMode,
       fps: S.fps,
     };
   }
+  // Lancement manuel depuis le panneau de contrôle : ignore le seuil auto,
+  // mais il faut tout de même au moins un joueur dans chaque camp.
   function startRace() {
+    if (S.phase === "countdown" || S.phase === "battle") return false;
+    if (!canForceStart()) return false;
     startCountdown(performance.now());
+    return true;
   }
   function stopRace() {
     if (S.phase === "battle" || S.phase === "countdown") {
@@ -1301,6 +1425,7 @@ export function createTeamWar3D(canvas, opts = {}) {
     S.phaseStart = performance.now();
     S.winner = null;
     S.ko = { rouge: 0, bleu: 0 };
+    S.camCut = true;
   }
   function resize() {
     const w = canvas.clientWidth || canvas.width;
