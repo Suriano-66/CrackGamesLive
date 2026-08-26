@@ -33,6 +33,8 @@ model User {
   overlayToken           String?   @unique
   // Nom d'utilisateur TikTok (@pseudo) dont on écoute le live.
   tiktokUsername         String?
+  // Config des cadeaux → billes (JSON) pour l'app Streamer.
+  giftConfig             String?
 }
 
 // Niveaux créés dans l'éditeur (data-driven).
