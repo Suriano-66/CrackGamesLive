@@ -5,11 +5,20 @@ import { prisma } from "@/lib/prisma";
 import { isAdmin } from "@/lib/rbac";
 import { getGameType } from "@/lib/gameTypes";
 
-// Liste les niveaux (staff).
-export async function GET() {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+// L'app de bureau "Studio" s'authentifie avec une clé partagée (STUDIO_API_KEY)
+// via l'en-tête x-studio-key, au lieu d'une session web.
+function studioOK(req: Request) {
+  const k = process.env.STUDIO_API_KEY;
+  return !!k && req.headers.get("x-studio-key") === k;
+}
+
+// Liste les niveaux (staff ou studio).
+export async function GET(req: Request) {
+  if (!studioOK(req)) {
+    const session = await auth();
+    if (!session?.user?.id) {
+      return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+    }
   }
   const levels = await prisma.level.findMany({ orderBy: { updatedAt: "desc" } });
   return NextResponse.json({ levels });
@@ -20,11 +29,13 @@ const createSchema = z.object({
   gameType: z.string().default("marble-race"),
 });
 
-// Crée un niveau (admin) initialisé avec le circuit par défaut du type de jeu.
+// Crée un niveau (admin ou studio) initialisé avec le circuit par défaut.
 export async function POST(req: Request) {
-  const session = await auth();
-  if (!session?.user?.id || !isAdmin(session.user.role)) {
-    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  if (!studioOK(req)) {
+    const session = await auth();
+    if (!session?.user?.id || !isAdmin(session.user.role)) {
+      return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+    }
   }
   const body = await req.json().catch(() => null);
   const parsed = createSchema.safeParse(body);

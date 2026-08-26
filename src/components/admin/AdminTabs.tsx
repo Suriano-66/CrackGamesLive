@@ -8,7 +8,6 @@ const TABS = [
   { href: "/admin/users", label: "Utilisateurs" },
   { href: "/admin/subscriptions", label: "Abonnements" },
   { href: "/admin/games", label: "Jeux" },
-  { href: "/admin/levels", label: "Niveaux" },
 ];
 
 export default function AdminTabs() {

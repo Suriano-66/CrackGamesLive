@@ -7,6 +7,9 @@ const STAFF_ROLES = ["admin", "support"];
 // Prisma) ici, pour que le middleware puisse tourner sur l'edge runtime.
 // Le provider Credentials (qui a besoin de la base) est ajouté dans auth.ts.
 export const authConfig = {
+  // Nécessaire derrière un proxy (Render, Railway, etc.) : sans ça Auth.js
+  // rejette les requêtes avec "UntrustedHost" en production.
+  trustHost: true,
   session: { strategy: "jwt" },
   pages: {
     signIn: "/login",

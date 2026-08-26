@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CrackGames Studio</title>
+<link rel="stylesheet" href="./studio.css" />
+<script type="importmap">
+{"imports":{
+  "three":"../vendor/three/build/three.module.js",
+  "three/":"../vendor/three/",
+  "cannon-es":"../vendor/cannon-es/dist/cannon-es.js"
+}}
+</script>
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="dot"></span> CrackGames <b>Studio</b></div>
+    <div class="lvlbar">
+      <span id="curName" class="cur-name">— aucun niveau —</span>
+      <span id="dirty" class="dirty" hidden>● non enregistré</span>
+      <span id="activePill" class="pill on" hidden>● Actif en live</span>
+    </div>
+    <div class="spacer"></div>
+    <span id="conn" class="conn off">● hors ligne</span>
+    <button id="btnTest" class="btn" disabled>▶ Tester</button>
+    <button id="btnSave" class="btn primary" disabled>Enregistrer</button>
+    <button id="btnActivate" class="btn" disabled>Activer en live</button>
+    <button id="btnConfig" class="btn ghost" title="Configuration">⚙</button>
+  </header>
+
+  <div class="workspace">
+    <!-- Colonne gauche : niveaux -->
+    <aside class="side">
+      <div class="side-h">
+        <span>Niveaux</span>
+        <button id="btnRefresh" class="mini" title="Rafraîchir">⟳</button>
+      </div>
+      <div class="new-row">
+        <input id="newName" placeholder="Nom du circuit…" />
+        <button id="btnNew" class="mini add">+ Créer</button>
+      </div>
+      <div id="levelList" class="lvl-list">
+        <div class="muted small">Connecte-toi pour voir les niveaux.</div>
+      </div>
+    </aside>
+
+    <!-- Centre : scène 3D -->
+    <main class="stage">
+      <div id="toolbar" class="toolbar">
+        <div class="tgroup">
+          <span class="tg-h">Ajouter</span>
+          <button class="tbtn add" data-add="track">▭ Plateforme</button>
+          <button class="tbtn add" data-add="start">🏁 Départ</button>
+          <button class="tbtn add" data-add="finish">🏆 Arrivée</button>
+          <button class="tbtn add" data-add="wall">🧱 Mur</button>
+        </div>
+        <div class="tgroup">
+          <span class="tg-h">Outil</span>
+          <button class="tbtn mode active" data-mode="translate" title="Déplacer (W)">✥ Déplacer</button>
+          <button class="tbtn mode" data-mode="rotate" title="Tourner (E)">⟳ Tourner</button>
+          <button class="tbtn mode" data-mode="scale" title="Étirer (R)">⤢ Étirer</button>
+          <button id="btnSnap" class="tbtn" title="Aligner sur la grille">🧲 Aimant</button>
+        </div>
+        <div class="tgroup">
+          <button id="btnDup" class="tbtn" disabled>⧉ Dupliquer</button>
+          <button id="btnDel" class="tbtn danger" disabled>✕ Supprimer</button>
+          <button id="btnFrame" class="tbtn">⛶ Tout voir</button>
+        </div>
+      </div>
+
+      <div class="canvas-wrap">
+        <canvas id="edCanvas"></canvas>
+        <canvas id="playCanvas" hidden></canvas>
+
+        <!-- Panneau propriétés -->
+        <div id="panel" class="panel" hidden>
+          <div class="panel-h">Plateforme <button id="btnDeselect" class="x">✕</button></div>
+          <label class="row"><span>Type</span>
+            <select id="pRole">
+              <option value="track">▭ Plateforme</option>
+              <option value="start">🏁 Départ</option>
+              <option value="finish">🏆 Arrivée</option>
+              <option value="wall">🧱 Mur</option>
+            </select>
+          </label>
+          <div class="row vec"><span>Position</span>
+            <div class="xyz">
+              <label class="ax x"><em>X</em><input type="number" step="0.5" data-k="pos" data-i="0"></label>
+              <label class="ax y"><em>Y</em><input type="number" step="0.5" data-k="pos" data-i="1"></label>
+              <label class="ax z"><em>Z</em><input type="number" step="0.5" data-k="pos" data-i="2"></label>
+            </div>
+          </div>
+          <div class="row vec"><span>Taille</span>
+            <div class="xyz">
+              <label class="ax x"><em>L</em><input type="number" step="0.5" min="0.2" data-k="size" data-i="0"></label>
+              <label class="ax y"><em>H</em><input type="number" step="0.5" min="0.2" data-k="size" data-i="1"></label>
+              <label class="ax z"><em>P</em><input type="number" step="0.5" min="0.2" data-k="size" data-i="2"></label>
+            </div>
+          </div>
+          <div class="row vec"><span>Rotation °</span>
+            <div class="xyz">
+              <label class="ax x"><em>X</em><input type="number" step="1" data-k="rot" data-i="0"></label>
+              <label class="ax y"><em>Y</em><input type="number" step="1" data-k="rot" data-i="1"></label>
+              <label class="ax z"><em>Z</em><input type="number" step="1" data-k="rot" data-i="2"></label>
+            </div>
+          </div>
+          <label class="row"><span>Couleur</span>
+            <span class="color">
+              <input type="color" id="pColor">
+              <button id="pColorAuto" class="mini">auto</button>
+            </span>
+          </label>
+        </div>
+
+        <div id="hint" class="hint">
+          Clique une plateforme pour la sélectionner · flèches = déplacer (X rouge, Y vert, Z bleu) ·
+          W/E/R = outils · molette = zoom · clic droit = tourner la caméra
+        </div>
+        <div id="playHud" class="play-hud" hidden></div>
+      </div>
+
+      <div class="settings-row">
+        <label>🎥 Caméra en jeu :
+          <select id="camSel">
+            <option value="auto">Auto</option>
+            <option value="chase">Derrière</option>
+            <option value="front">De face</option>
+            <option value="side">Côté</option>
+            <option value="top">Vue du haut</option>
+          </select>
+        </label>
+        <span id="counts" class="muted small"></span>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modale config -->
+  <div id="cfgModal" class="modal" hidden>
+    <div class="modal-card">
+      <h2>Configuration du studio</h2>
+      <p class="muted small">Connecte le studio à ton site CrackGamesLive. La clé doit être identique à <code>STUDIO_API_KEY</code> dans le fichier <code>.env</code> du site.</p>
+      <label class="fld"><span>URL du site</span>
+        <input id="cfgUrl" placeholder="http://localhost:3000" />
+      </label>
+      <label class="fld"><span>Clé studio (STUDIO_API_KEY)</span>
+        <input id="cfgKey" type="password" placeholder="colle ta clé ici" />
+      </label>
+      <div id="cfgMsg" class="cfg-msg"></div>
+      <div class="modal-actions">
+        <button id="cfgTest" class="btn ghost">Tester la connexion</button>
+        <button id="cfgSave" class="btn primary">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="./studio.js"></script>
+</body>
+</html>

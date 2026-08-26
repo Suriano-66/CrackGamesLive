@@ -9,7 +9,10 @@ if (!key && process.env.NODE_ENV === "production") {
   console.warn("[stripe] STRIPE_SECRET_KEY manquant — les paiements échoueront.");
 }
 
-export const stripe = new Stripe(key ?? "sk_test_placeholder", {
+// `||` (et non `??`) : une variable définie mais VIDE ("") doit aussi
+// retomber sur le placeholder, sinon le constructeur Stripe plante au build
+// ("Neither apiKey nor config.authenticator provided").
+export const stripe = new Stripe(key || "sk_test_placeholder", {
   apiVersion: "2024-12-18.acacia",
   typescript: true,
   appInfo: { name: "CrackGamesLive" },

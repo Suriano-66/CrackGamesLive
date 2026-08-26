@@ -5,10 +5,16 @@ import { prisma } from "@/lib/prisma";
 import { isAdmin } from "@/lib/rbac";
 import { parseLevelData } from "@/lib/levels";
 
-async function guard() {
+// L'app de bureau "Studio" s'authentifie avec STUDIO_API_KEY (en-tête x-studio-key).
+function studioOK(req: Request) {
+  const k = process.env.STUDIO_API_KEY;
+  return !!k && req.headers.get("x-studio-key") === k;
+}
+async function guard(req: Request) {
+  if (studioOK(req)) return true;
   const session = await auth();
-  if (!session?.user?.id || !isAdmin(session.user.role)) return null;
-  return session;
+  if (!session?.user?.id || !isAdmin(session.user.role)) return false;
+  return true;
 }
 
 const patchSchema = z.object({
@@ -21,7 +27,7 @@ const patchSchema = z.object({
 
 // Met à jour un niveau (nom, pièces, activation). Admin.
 export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  if (!(await guard())) return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+  if (!(await guard(req))) return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   const { id } = await ctx.params;
   const body = await req.json().catch(() => null);
   const parsed = patchSchema.safeParse(body);
@@ -57,8 +63,8 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
 }
 
 // Supprime un niveau. Admin.
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  if (!(await guard())) return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  if (!(await guard(req))) return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   const { id } = await ctx.params;
   await prisma.level.delete({ where: { id } }).catch(() => {});
   return NextResponse.json({ ok: true });
