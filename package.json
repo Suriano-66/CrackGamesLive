@@ -16,9 +16,10 @@
     "stripe:listen": "stripe listen --forward-to localhost:3000/api/stripe/webhook"
   },
   "dependencies": {
-    "@prisma/client": "^6.3.0",
+    "@prisma/client": "6.3.0",
     "bcryptjs": "2.4.3",
     "cannon-es": "^0.20.0",
+    "jose": "^6.2.9",
     "matter-js": "^0.20.0",
     "next": "15.5.23",
     "next-auth": "5.0.0-beta.32",
@@ -37,7 +38,7 @@
     "@types/react": "19.0.7",
     "@types/react-dom": "19.0.3",
     "@types/three": "^0.171.0",
-    "prisma": "^6.3.0",
+    "prisma": "6.3.0",
     "typescript": "5.7.3"
   }
 }

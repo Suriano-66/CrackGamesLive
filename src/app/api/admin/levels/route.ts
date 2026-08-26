@@ -1,26 +1,41 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { isAdmin } from "@/lib/rbac";
+import { isStaff } from "@/lib/rbac";
 import { getGameType } from "@/lib/gameTypes";
+import { caller, lockInfo } from "@/lib/levelApi";
 
-// L'app de bureau "Studio" s'authentifie avec une clé partagée (STUDIO_API_KEY)
-// via l'en-tête x-studio-key, au lieu d'une session web.
-function studioOK(req: Request) {
-  const k = process.env.STUDIO_API_KEY;
-  return !!k && req.headers.get("x-studio-key") === k;
-}
+export const dynamic = "force-dynamic";
 
-// Liste les niveaux (staff ou studio).
+// Liste les niveaux (staff / studio).
 export async function GET(req: Request) {
-  if (!studioOK(req)) {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
-    }
-  }
-  const levels = await prisma.level.findMany({ orderBy: { updatedAt: "desc" } });
+  const who = await caller(req);
+  if (!who) return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  const rows = await prisma.level.findMany({ orderBy: { updatedAt: "desc" } });
+  type Row = {
+    id: string;
+    gameType: string;
+    name: string;
+    data: string;
+    active: boolean;
+    createdByName: string | null;
+    updatedByName: string | null;
+    updatedAt: Date;
+    lockedByName: string | null;
+    lockedById: string | null;
+    lockedAt: Date | null;
+  };
+  const levels = (rows as Row[]).map((l) => ({
+    id: l.id,
+    gameType: l.gameType,
+    name: l.name,
+    data: l.data,
+    active: l.active,
+    createdByName: l.createdByName,
+    updatedByName: l.updatedByName,
+    updatedAt: l.updatedAt,
+    ...lockInfo(l),
+  }));
   return NextResponse.json({ levels });
 }
 
@@ -29,13 +44,11 @@ const createSchema = z.object({
   gameType: z.string().default("marble-race"),
 });
 
-// Crée un niveau (admin ou studio) initialisé avec le circuit par défaut.
+// Crée un niveau (staff / studio).
 export async function POST(req: Request) {
-  if (!studioOK(req)) {
-    const session = await auth();
-    if (!session?.user?.id || !isAdmin(session.user.role)) {
-      return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
-    }
+  const who = await caller(req);
+  if (!who || !isStaff(who.role)) {
+    return NextResponse.json({ error: "Accès refusé." }, { status: 403 });
   }
   const body = await req.json().catch(() => null);
   const parsed = createSchema.safeParse(body);
@@ -51,6 +64,10 @@ export async function POST(req: Request) {
       name: parsed.data.name,
       gameType: gt.id,
       data: JSON.stringify({ platforms: gt.defaultPlatforms, settings: {} }),
+      createdById: who.id,
+      createdByName: who.name,
+      updatedById: who.id,
+      updatedByName: who.name,
     },
   });
   return NextResponse.json({ ok: true, level });

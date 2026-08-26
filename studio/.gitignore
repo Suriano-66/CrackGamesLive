@@ -1,6 +1,0 @@
-node_modules/
-dist/
-
-# Fichiers régénérés par scripts/prepare.mjs (npm run assets) :
-vendor/
-renderer/engine/

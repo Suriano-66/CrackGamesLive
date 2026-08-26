@@ -40,12 +40,39 @@ model Level {
   id        String   @id @default(cuid())
   gameType  String   @default("marble-race")
   name      String
-  data      String // JSON : { pieces: [...] }
+  data      String // JSON : { platforms: [...], settings: {...} }
   active    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // Traçabilité (qui a créé / modifié en dernier).
+  createdById   String?
+  createdByName String?
+  updatedById   String?
+  updatedByName String?
+
+  // Verrou d'édition : qui édite en ce moment (heartbeat via lockedAt).
+  lockedById   String?
+  lockedByName String?
+  lockedAt     DateTime?
+
+  versions LevelVersion[]
+
   @@index([gameType, active])
+}
+
+// Historique : une entrée par sauvegarde explicite (retour arrière possible).
+model LevelVersion {
+  id          String   @id @default(cuid())
+  levelId     String
+  level       Level    @relation(fields: [levelId], references: [id], onDelete: Cascade)
+  data        String
+  savedById   String?
+  savedByName String?
+  label       String?
+  createdAt   DateTime @default(now())
+
+  @@index([levelId, createdAt])
 }
 
 // Catalogue de jeux géré depuis le back-office.
