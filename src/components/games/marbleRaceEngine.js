@@ -451,15 +451,17 @@ export function createMarbleRace3D(canvas, opts = {}) {
   }
   function handleGift(userId, nickname, avatar, giftName, count) {
     const p = ensurePlayer(userId, nickname, avatar);
-<<<<<<< HEAD
-    if (p.pending >= MAX_BALLS) {
+    // Fusion : la config de cadeaux par compte (côté collègue) s'applique
+    // désormais à la file d'attente et non plus à la course en cours.
+    const cap = Math.min(MAX_BALLS, S.giftConfig.maxPerPlayer || MAX_BALLS);
+    if (p.pending >= cap) {
       p.full = true;
       return;
     }
     // Le cadeau alimente la course SUIVANTE, jamais celle en cours : une fois
     // le départ donné, plus aucune bille n'apparaît.
-    p.pending = Math.min(MAX_BALLS, p.pending + marblesForGift(diamonds, count));
-    if (p.pending >= MAX_BALLS) p.full = true;
+    p.pending = Math.min(cap, p.pending + marblesForGift(giftName, count, S.giftConfig));
+    if (p.pending >= cap) p.full = true;
   }
   // Joueurs ayant des billes en attente pour la prochaine course.
   function queuedPlayers() {
@@ -485,18 +487,6 @@ export function createMarbleRace3D(canvas, opts = {}) {
         avatarCache.delete(id);
       }
     }
-=======
-    const cap = Math.min(MAX_BALLS, S.giftConfig.maxPerPlayer || MAX_BALLS);
-    if (p.ballCount >= cap) {
-      p.full = true;
-      return;
-    }
-    const before = p.ballCount;
-    p.ballCount = Math.min(cap, p.ballCount + marblesForGift(giftName, count, S.giftConfig));
-    if (p.ballCount >= cap) p.full = true;
-    const gained = p.ballCount - before;
-    if (S.phase !== "intermission" && gained > 0) queueSpawns(p, gained);
->>>>>>> c440b89bbbffb9283706de80ea67a06138810a41
   }
 
   function removeAllMarbles() {
