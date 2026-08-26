@@ -14,8 +14,9 @@ interface BoardRow {
   avatar: string | null;
 }
 interface GameState {
-  phase: "filling" | "racing" | "intermission";
+  phase: "filling" | "countdown" | "racing" | "intermission";
   timer: number;
+  count?: number;
   connected: boolean;
   players: number;
   board: BoardRow[];
@@ -111,7 +112,9 @@ export default function MarbleRace3D({
       <div className="mr3d-top">
         <div className="mr3d-title">🏁 La grande course</div>
         <div className="mr3d-status">
-          {phase === "racing" ? (
+          {phase === "countdown" ? (
+            <span className="mr3d-timer">{st?.count ?? 3}…</span>
+          ) : phase === "racing" ? (
             <span className="mr3d-timer">⏱ {st?.timer ?? 0}s</span>
           ) : phase === "filling" ? (
             <span>En attente de billes…</span>

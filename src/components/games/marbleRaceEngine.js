@@ -15,6 +15,8 @@ const MAX_BALLS = 100;
 const RACE_MAX_MS = 90000;
 const INTERMISSION_MS = 8000;
 const CAM_SWITCH_MS = 7000;
+const MIN_PLAYERS = 2; // il faut au moins 2 joueurs différents pour lancer une course
+const COUNTDOWN_MS = 3000; // 3·2·1 avant le GO (billes retenues au départ)
 const D2R = Math.PI / 180;
 
 // Circuit de secours minimal (si aucune plateforme n'est fournie).
@@ -152,6 +154,8 @@ export function createMarbleRace3D(canvas, opts = {}) {
     // Contrôles temps réel
     camOverride: null, // null = suit `cameraPref` ; sinon force un mode
     focusPlayerId: null,
+    frozen: false, // billes retenues pendant le compte à rebours
+    countdownStart: 0,
     autoRace: opts.autoRace !== false, // true = les courses s'enchaînent seules
     frameDt: 0.016,
     free: { pos: new THREE.Vector3(0, 40, -30), yaw: 0, pitch: -0.3, keys: new Set(), fast: false, slow: false },
@@ -316,6 +320,13 @@ export function createMarbleRace3D(canvas, opts = {}) {
     body.position.set(start.x, start.y, start.z);
     body.velocity.set(fwd.x * 2, fwd.y * 2, fwd.z * 2);
     world.addBody(body);
+    // Compte à rebours : la bille est gelée au départ jusqu'au GO.
+    if (S.frozen) {
+      body.type = CANNON.Body.STATIC;
+      body.velocity.set(0, 0, 0);
+      body.angularVelocity.set(0, 0, 0);
+      body.updateMassProperties();
+    }
     const col = new THREE.Color(p.color);
     const mesh = new THREE.Mesh(
       ballGeo,
@@ -446,10 +457,28 @@ export function createMarbleRace3D(canvas, opts = {}) {
     if (S.camDir.lengthSq() < 0.001) S.camDir.set(0, 0, 1);
     S.camDir.normalize();
     for (const p of S.players.values()) queueSpawns(p, p.ballCount);
-    S.phase = S.players.size === 0 ? "filling" : "racing";
+    // Assez de joueurs → compte à rebours (billes gelées) ; sinon on attend.
+    const enough = S.players.size >= MIN_PLAYERS;
+    S.frozen = enough;
+    S.phase = enough ? "countdown" : "filling";
     S.phaseStart = now;
-    S.raceStart = now;
+    S.countdownStart = now;
+    S.raceStart = now; // recalé au GO
     S.camMode = 0;
+    S.camModeStart = now;
+  }
+  // GO : on lâche les billes retenues.
+  function releaseRace(now) {
+    S.frozen = false;
+    for (const m of S.marbles) {
+      m.body.type = CANNON.Body.DYNAMIC;
+      m.body.updateMassProperties();
+      m.body.wakeUp();
+      m.body.velocity.set(S.spawnFwd.x * 3, S.spawnFwd.y * 3, S.spawnFwd.z * 3);
+    }
+    S.phase = "racing";
+    S.raceStart = now;
+    S.phaseStart = now;
     S.camModeStart = now;
   }
   function endRace(now) {
@@ -536,7 +565,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     let camPos = new THREE.Vector3(0, 70, -40);
     let look = new THREE.Vector3(0, 40, 6);
     const info = packInfo();
-    if (info && (S.phase === "racing" || S.phase === "intermission")) {
+    if (info && (S.phase === "racing" || S.phase === "intermission" || S.phase === "countdown")) {
       let focusM = info.lead || null;
       let center = info.c;
       if (baseMode === "focus" && S.focusPlayerId) {
@@ -639,6 +668,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     onState({
       phase: S.phase,
       timer,
+      count: S.phase === "countdown" ? Math.max(1, Math.ceil((COUNTDOWN_MS - (now - S.countdownStart)) / 1000)) : 0,
       connected: S.connected,
       players: S.players.size,
       board: ordered,
@@ -658,14 +688,17 @@ export function createMarbleRace3D(canvas, opts = {}) {
     last = now;
     S.frameDt = dt;
 
-    if (S.phase === "filling") {
-      if (S.autoRace && S.players.size > 0 && now - S.phaseStart > 2500) startRace(now);
+    if (S.phase === "countdown") {
+      if (now - S.countdownStart >= COUNTDOWN_MS) releaseRace(now);
+    } else if (S.phase === "filling") {
+      // Démarre seulement quand au moins MIN_PLAYERS joueurs différents ont des billes.
+      if (S.autoRace && S.players.size >= MIN_PLAYERS && now - S.phaseStart > 2500) startRace(now);
     } else if (S.phase === "racing") {
       const active = S.marbles.filter((m) => !m.finished);
       if ((active.length === 0 && S.marbles.length > 0) || now - S.raceStart > RACE_MAX_MS) endRace(now);
       if (S.marbles.length === 0 && now - S.raceStart > 6000) endRace(now);
     } else if (S.phase === "intermission") {
-      if (S.autoRace && now - S.phaseStart > INTERMISSION_MS) startRace(now);
+      if (S.autoRace && S.players.size >= MIN_PLAYERS && now - S.phaseStart > INTERMISSION_MS) startRace(now);
     }
 
     let budget = 3;

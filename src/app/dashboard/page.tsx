@@ -4,9 +4,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { getPlan } from "@/lib/plans";
 import { getEnabledGames } from "@/lib/games";
-import { getOrCreateOverlayToken } from "@/lib/overlay";
 import { isStaff } from "@/lib/rbac";
-import StreamLinks from "@/components/StreamLinks";
 import TikTokSettings from "@/components/TikTokSettings";
 import ThemeToggle from "@/components/ThemeToggle";
 import {
@@ -31,9 +29,8 @@ export default async function DashboardPage() {
   const plan = user.plan ? getPlan(user.plan) : undefined;
   const staff = isStaff(user.role);
   const games = isActive ? await getEnabledGames() : [];
-  const overlayToken = isActive
-    ? await getOrCreateOverlayToken(user.id, user.overlayToken)
-    : null;
+  // Lien de téléchargement de l'application de bureau (défini via l'env quand dispo).
+  const appUrl = process.env.NEXT_PUBLIC_STREAM_APP_URL || "";
 
   return (
     <>
@@ -71,14 +68,36 @@ export default async function DashboardPage() {
 
         <div className="dash-grid">
           <div className="card">
-            <h2>Tes jeux</h2>
+            <h2>Ton application de stream</h2>
             {isActive ? (
               <>
                 <p>
-                  Voici tes liens privés à coller dans OBS (source navigateur) —
-                  un lien par jeu.
+                  Le streaming se fait via l&apos;application de bureau{" "}
+                  <b>CrackGames Stream</b> : une fenêtre à capturer dans OBS et un
+                  panneau pour piloter la course en direct. Connecte-toi dedans
+                  avec ce même compte.
                 </p>
-                <StreamLinks token={overlayToken!} games={games} />
+                {appUrl ? (
+                  <a
+                    className="btn btn-primary"
+                    href={appUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ marginBottom: 14, display: "inline-block" }}
+                  >
+                    ⬇️ Télécharger CrackGames Stream
+                  </a>
+                ) : (
+                  <div className="readonly-note" style={{ marginBottom: 14 }}>
+                    📦 Le lien de téléchargement de l&apos;application arrive
+                    bientôt ici.
+                  </div>
+                )}
+                {games.length > 0 && (
+                  <p style={{ color: "var(--muted)", fontSize: 14, marginBottom: 0 }}>
+                    Jeux disponibles : {games.map((g) => `${g.emoji} ${g.title}`).join(" · ")}
+                  </p>
+                )}
               </>
             ) : (
               <div className="locked">
@@ -97,7 +116,7 @@ export default async function DashboardPage() {
                 </div>
                 <p style={{ maxWidth: 320, marginBottom: 18 }}>
                   Choisis un abonnement pour débloquer la bibliothèque de jeux et
-                  tes liens OBS.
+                  l&apos;application de stream.
                 </p>
                 <Link className="btn btn-primary" href="/#pricing">
                   Voir les abonnements
