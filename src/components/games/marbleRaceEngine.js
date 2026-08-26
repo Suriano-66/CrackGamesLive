@@ -48,12 +48,15 @@ function hashHue(s) {
 
 export function createMarbleRace3D(canvas, opts = {}) {
   const onState = opts.onState || (() => {});
-  const levelPlatforms =
+  const onPick = opts.onPick || (() => {});
+  // Contrôles temps réel (app Streamer). Off par défaut → Studio/overlay inchangés.
+  const controls = !!opts.controls;
+  let levelPlatforms =
     opts.level && Array.isArray(opts.level.platforms) && opts.level.platforms.length
       ? opts.level.platforms
       : FALLBACK_PLATFORMS;
-  const settings = (opts.level && opts.level.settings) || {};
-  const cameraPref = settings.camera || "auto"; // auto|chase|front|side|top
+  let settings = (opts.level && opts.level.settings) || {};
+  let cameraPref = settings.camera || "auto"; // auto|chase|front|side|top|free|focus
   let disposed = false;
 
   // ----- Rendu -----
@@ -146,6 +149,12 @@ export function createMarbleRace3D(canvas, opts = {}) {
     connected: false,
     camLook: new THREE.Vector3(0, 0, 0),
     camDir: new THREE.Vector3(0, 0, 1),
+    // Contrôles temps réel
+    camOverride: null, // null = suit `cameraPref` ; sinon force un mode
+    focusPlayerId: null,
+    autoRace: opts.autoRace !== false, // true = les courses s'enchaînent seules
+    frameDt: 0.016,
+    free: { pos: new THREE.Vector3(0, 40, -30), yaw: 0, pitch: -0.3, keys: new Set(), fast: false, slow: false },
   };
 
   function rnd() {
@@ -478,14 +487,66 @@ export function createMarbleRace3D(canvas, opts = {}) {
   const AUTO_SEQ = ["chase", "front", "side", "chase", "top"];
   const _side = new THREE.Vector3();
   const _tan = new THREE.Vector3();
+  // ----- Caméra libre (vol ZQSD + Ctrl/Shift, look à la souris) -----
+  function freeForward() {
+    const f = S.free;
+    return new THREE.Vector3(
+      Math.cos(f.pitch) * Math.sin(f.yaw),
+      Math.sin(f.pitch),
+      Math.cos(f.pitch) * Math.cos(f.yaw),
+    );
+  }
+  function updateFree() {
+    const f = S.free;
+    const fwd = freeForward();
+    const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+    const speed = 30 * (f.fast ? 3 : 1) * (f.slow ? 0.3 : 1) * S.frameDt;
+    const move = new THREE.Vector3();
+    if (f.keys.has("z") || f.keys.has("w")) move.add(fwd);
+    if (f.keys.has("s")) move.sub(fwd);
+    if (f.keys.has("q") || f.keys.has("a")) move.sub(right);
+    if (f.keys.has("d")) move.add(right);
+    if (f.keys.has(" ")) move.y += 1;
+    if (f.keys.has("c")) move.y -= 1;
+    if (move.lengthSq() > 0) f.pos.addScaledVector(move.normalize(), speed);
+    camera.position.copy(f.pos);
+    camera.lookAt(f.pos.clone().add(fwd));
+  }
+  function leadMarbleOf(pid) {
+    let best = -Infinity,
+      fm = null;
+    for (const m of S.marbles) {
+      if (m.playerId === pid) {
+        const pr = progressOf(m.body.position);
+        if (pr > best) {
+          best = pr;
+          fm = m;
+        }
+      }
+    }
+    return fm;
+  }
+
   function updateCamera(now) {
+    const baseMode = S.camOverride || cameraPref;
+    if (baseMode === "free") {
+      updateFree();
+      return;
+    }
     let camPos = new THREE.Vector3(0, 70, -40);
     let look = new THREE.Vector3(0, 40, 6);
     const info = packInfo();
     if (info && (S.phase === "racing" || S.phase === "intermission")) {
-      const focusM = info.lead || null;
-      const c = info.c;
-      // direction = vitesse horizontale de la bille de tête (lissée → pas de secousse)
+      let focusM = info.lead || null;
+      let center = info.c;
+      if (baseMode === "focus" && S.focusPlayerId) {
+        const fm = leadMarbleOf(S.focusPlayerId);
+        if (fm) {
+          focusM = fm;
+          center = new THREE.Vector3(fm.body.position.x, fm.body.position.y, fm.body.position.z);
+        }
+      }
+      // direction = vitesse horizontale de la bille suivie (lissée → pas de secousse)
       _tan.set(
         focusM ? focusM.body.velocity.x : info.v.x,
         0,
@@ -499,14 +560,17 @@ export function createMarbleRace3D(canvas, opts = {}) {
       S.camDir.normalize();
       const d = S.camDir;
       _side.set(d.z, 0, -d.x).normalize();
+      const c = center;
 
-      let mode = cameraPref;
+      let mode = baseMode;
       if (mode === "auto") {
         if (S.phase === "racing" && now - S.camModeStart > CAM_SWITCH_MS) {
           S.camMode = (S.camMode + 1) % AUTO_SEQ.length;
           S.camModeStart = now;
         }
         mode = AUTO_SEQ[S.camMode % AUTO_SEQ.length];
+      } else if (mode === "focus") {
+        mode = "chase";
       }
 
       if (mode === "front") {
@@ -541,7 +605,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     camera.lookAt(S.camLook);
   }
 
-  function emitState(now) {
+  function computeBoard(limit) {
     const arrived = S.finishOrder.slice();
     const aset = new Set(arrived.map((p) => p.id));
     const racing = [...S.players.values()]
@@ -557,15 +621,19 @@ export function createMarbleRace3D(canvas, opts = {}) {
       })
       .sort((a, b) => b.prog - a.prog)
       .map((o) => o.p);
-    const ordered = [...arrived, ...racing].slice(0, 12).map((p, i) => ({
+    return [...arrived, ...racing].slice(0, limit || 12).map((p, i) => ({
       rank: i + 1,
       id: p.id,
       name: p.name,
       color: p.color,
       balls: p.ballCount,
       full: p.full,
+      finished: p.finishRank != null,
       avatar: p.img && p.img.complete ? p.img.src : null,
     }));
+  }
+  function emitState(now) {
+    const ordered = computeBoard(12);
     let timer = 0;
     if (S.phase === "racing") timer = Math.max(0, Math.ceil((RACE_MAX_MS - (now - S.raceStart)) / 1000));
     onState({
@@ -588,15 +656,16 @@ export function createMarbleRace3D(canvas, opts = {}) {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    S.frameDt = dt;
 
     if (S.phase === "filling") {
-      if (S.players.size > 0 && now - S.phaseStart > 2500) startRace(now);
+      if (S.autoRace && S.players.size > 0 && now - S.phaseStart > 2500) startRace(now);
     } else if (S.phase === "racing") {
       const active = S.marbles.filter((m) => !m.finished);
       if ((active.length === 0 && S.marbles.length > 0) || now - S.raceStart > RACE_MAX_MS) endRace(now);
       if (S.marbles.length === 0 && now - S.raceStart > 6000) endRace(now);
     } else if (S.phase === "intermission") {
-      if (now - S.phaseStart > INTERMISSION_MS) startRace(now);
+      if (S.autoRace && now - S.phaseStart > INTERMISSION_MS) startRace(now);
     }
 
     let budget = 3;
@@ -711,6 +780,107 @@ export function createMarbleRace3D(canvas, opts = {}) {
       maxY: S.marbles.length ? maxY : null,
     };
   }
+
+  // ----- Contrôles temps réel (app Streamer) -----
+  function setCameraMode(mode) {
+    if (mode === "auto") S.camOverride = null;
+    else S.camOverride = mode;
+    if (mode === "free") {
+      S.free.pos.copy(camera.position);
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      S.free.yaw = Math.atan2(dir.x, dir.z);
+      S.free.pitch = Math.asin(Math.max(-1, Math.min(1, dir.y)));
+    }
+  }
+  function focusPlayer(id) {
+    S.focusPlayerId = id || null;
+    S.camOverride = id ? "focus" : null;
+  }
+  function getBoard() {
+    return computeBoard(20);
+  }
+  function getInfo() {
+    return {
+      phase: S.phase,
+      players: S.players.size,
+      connected: S.connected,
+      autoRace: S.autoRace,
+      camMode: S.camOverride || cameraPref,
+      focusPlayerId: S.focusPlayerId,
+    };
+  }
+  function startRaceNow() {
+    startRace(performance.now());
+  }
+  function stopRaceNow() {
+    if (S.phase === "racing") endRace(performance.now());
+  }
+  function setAutoRace(v) {
+    S.autoRace = !!v;
+  }
+  function loadLevel(lvl) {
+    if (lvl && Array.isArray(lvl.platforms) && lvl.platforms.length) levelPlatforms = lvl.platforms;
+    if (lvl && lvl.settings) {
+      settings = lvl.settings;
+      cameraPref = settings.camera || "auto";
+    }
+    startRace(performance.now());
+  }
+
+  // Entrées clavier/souris (uniquement si controls=true)
+  const pickRay = new THREE.Raycaster();
+  const pickNdc = new THREE.Vector2();
+  function pickAt(cx, cy) {
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    pickNdc.x = ((cx - rect.left) / rect.width) * 2 - 1;
+    pickNdc.y = -((cy - rect.top) / rect.height) * 2 + 1;
+    pickRay.setFromCamera(pickNdc, camera);
+    const hit = pickRay.intersectObjects(S.marbles.map((m) => m.mesh), false)[0];
+    if (hit) {
+      const m = S.marbles.find((mm) => mm.mesh === hit.object);
+      if (m) {
+        focusPlayer(m.playerId);
+        onPick(m.playerId);
+      }
+    }
+  }
+  const _mouse = { downX: 0, downY: 0, moved: false, dragging: false };
+  function onKeyDown(e) {
+    const tag = e.target && e.target.tagName;
+    if (tag && /input|textarea|select/i.test(tag)) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === " " || ["z", "q", "s", "d", "w", "a", "c"].includes(k)) S.free.keys.add(k);
+    if (e.key === "Control") S.free.fast = true;
+    if (e.key === "Shift") S.free.slow = true;
+  }
+  function onKeyUp(e) {
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    S.free.keys.delete(k);
+    if (e.key === "Control") S.free.fast = false;
+    if (e.key === "Shift") S.free.slow = false;
+  }
+  function onMouseDown(e) {
+    _mouse.downX = e.clientX;
+    _mouse.downY = e.clientY;
+    _mouse.moved = false;
+    _mouse.dragging = true;
+  }
+  function onMouseMove(e) {
+    if (!_mouse.dragging) return;
+    if (Math.abs(e.clientX - _mouse.downX) + Math.abs(e.clientY - _mouse.downY) > 4) _mouse.moved = true;
+    if ((S.camOverride || cameraPref) === "free") {
+      S.free.yaw -= (e.movementX || 0) * 0.0035;
+      S.free.pitch -= (e.movementY || 0) * 0.0035;
+      S.free.pitch = Math.max(-1.45, Math.min(1.45, S.free.pitch));
+    }
+  }
+  function onMouseUp(e) {
+    _mouse.dragging = false;
+    if (!_mouse.moved) pickAt(e.clientX, e.clientY);
+  }
+
   function resize() {
     const w = canvas.clientWidth || canvas.width;
     const h = canvas.clientHeight || canvas.height;
@@ -723,6 +893,13 @@ export function createMarbleRace3D(canvas, opts = {}) {
     disposed = true;
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", resize);
+    if (controls) {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      canvas.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
     removeAllMarbles();
     clearTrack();
     for (const [, a] of avatarCache) {
@@ -738,7 +915,28 @@ export function createMarbleRace3D(canvas, opts = {}) {
   S.phaseStart = performance.now();
   resize();
   window.addEventListener("resize", resize);
+  if (controls) {
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    canvas.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
   raf = requestAnimationFrame(frame);
 
-  return { handleEvent, setConnected, resize, dispose, getDebug };
+  return {
+    handleEvent,
+    setConnected,
+    resize,
+    dispose,
+    getDebug,
+    setCameraMode,
+    focusPlayer,
+    getBoard,
+    getInfo,
+    startRace: startRaceNow,
+    stopRace: stopRaceNow,
+    setAutoRace,
+    loadLevel,
+  };
 }
