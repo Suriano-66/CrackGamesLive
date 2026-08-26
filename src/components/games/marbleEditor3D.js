@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
+import { creerObjetModele, estModele, modeleDef, appliquerAnim, estAnimee } from "./assets.js";
 
 const D2R = Math.PI / 180;
 const R2D = 180 / Math.PI;
@@ -28,6 +29,12 @@ function clonePlat(p) {
     size: [p.size[0], p.size[1], p.size[2]],
     rot: [p.rot ? p.rot[0] : 0, p.rot ? p.rot[1] : 0, p.rot ? p.rot[2] : 0],
     color: p.color || undefined,
+    model: p.model || undefined,
+    solid: !!p.solid,
+    name: p.name || undefined,
+    hidden: !!p.hidden,
+    locked: !!p.locked,
+    anim: p.anim ? { ...p.anim } : undefined,
   };
 }
 function genId(role) {
@@ -41,6 +48,12 @@ export function createMarbleEditor3D(canvas, opts = {}) {
   const onChange = opts.onChange || (() => {});
   const onSelect = opts.onSelect || (() => {});
   const canEdit = opts.canEdit !== false;
+  // Le Studio gère lui-même le clavier : sinon suppressions et duplications
+  // court-circuiteraient la pile d'annulation.
+  const handleKeys = opts.handleKeys === true;
+  let apercuAnim = opts.apercuAnim !== false; // aperçu des animations
+  const t0Anim = performance.now();
+  const assetsBase = opts.assetsBase || "../assets/models/";
   let disposed = false;
   let platforms = (opts.platforms || []).map(clonePlat);
 
@@ -113,11 +126,17 @@ export function createMarbleEditor3D(canvas, opts = {}) {
   scene.add(boxHelper);
 
   function addMesh(pl) {
-    const mesh = new THREE.Mesh(unit, matFor(pl.role, pl.color));
+    // Une pièce « modèle » affiche un fichier .glb ; tout le reste est une
+    // boîte. Le groupe renvoyé est utilisable immédiatement (volume témoin
+    // affiché le temps du chargement), donc rien n'est asynchrone ici.
+    const mesh = estModele(pl)
+      ? creerObjetModele(pl, { base: assetsBase })
+      : new THREE.Mesh(unit, matFor(pl.role, pl.color));
     mesh.scale.set(Math.max(0.2, pl.size[0]), Math.max(0.2, pl.size[1]), Math.max(0.2, pl.size[2]));
     mesh.position.set(pl.pos[0], pl.pos[1], pl.pos[2]);
     mesh.rotation.set((pl.rot[0] || 0) * D2R, (pl.rot[1] || 0) * D2R, (pl.rot[2] || 0) * D2R, "XYZ");
-    mesh.userData = { id: pl.id, role: pl.role, color: pl.color };
+    mesh.userData = { id: pl.id, role: pl.role, color: pl.color, model: pl.model, solid: !!pl.solid, locked: !!pl.locked, anim: pl.anim, name: pl.name };
+    mesh.visible = !pl.hidden;
     scene.add(mesh);
     meshes.set(pl.id, mesh);
     return mesh;
@@ -134,6 +153,12 @@ export function createMarbleEditor3D(canvas, opts = {}) {
       id: mesh.userData.id,
       role: mesh.userData.role,
       color: mesh.userData.color,
+      model: mesh.userData.model,
+      solid: !!mesh.userData.solid,
+      name: mesh.userData.name,
+      hidden: !mesh.visible,
+      locked: !!mesh.userData.locked,
+      anim: mesh.userData.anim ? { ...mesh.userData.anim } : undefined,
       pos: [round(mesh.position.x), round(mesh.position.y), round(mesh.position.z)],
       size: [round(Math.abs(mesh.scale.x)), round(Math.abs(mesh.scale.y)), round(Math.abs(mesh.scale.z))],
       rot: [round(mesh.rotation.x * R2D), round(mesh.rotation.y * R2D), round(mesh.rotation.z * R2D)],
@@ -182,12 +207,38 @@ export function createMarbleEditor3D(canvas, opts = {}) {
     ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     ray.setFromCamera(ndc, camera);
-    const hits = ray.intersectObjects([...meshes.values()], false);
-    if (hits.length) select(hits[0].object.userData.id);
-    else select(null);
+    // recursive = true : un modèle est un groupe, le rayon touche ses sous-objets
+    const selectionnables = [...meshes.values()].filter((m) => m.visible && !m.userData.locked);
+    const hits = ray.intersectObjects(selectionnables, true);
+    if (hits.length) {
+      let obj = hits[0].object;
+      while (obj && obj.userData.id === undefined) obj = obj.parent;
+      if (obj && obj.userData.id !== undefined) select(obj.userData.id);
+      else select(null);
+    } else select(null);
   });
 
   // ----- Opérations -----
+  // Pose un modèle 3D de la bibliothèque au centre de la vue.
+  function addModel(modelId) {
+    const def = modeleDef(modelId);
+    const t = orbit.target;
+    const pl = {
+      id: genId("modele"),
+      role: "modele",
+      model: def.id,
+      pos: [round(t.x), round(t.y), round(t.z)],
+      size: [1, 1, 1],
+      rot: [0, 0, 0],
+      solid: false,
+      color: undefined,
+    };
+    platforms.push(pl);
+    addMesh(pl);
+    select(pl.id);
+    commit();
+    return pl.id;
+  }
   function addPlatform(role) {
     role = role || "track";
     const t = orbit.target;
@@ -264,6 +315,31 @@ export function createMarbleEditor3D(canvas, opts = {}) {
       selMesh.userData.role = patch.role;
       selMesh.material = matFor(patch.role, selMesh.userData.color);
     }
+    if (patch.solid !== undefined) {
+      selMesh.userData.solid = !!patch.solid;
+    }
+    if (patch.anim !== undefined) {
+      selMesh.userData.anim = patch.anim ? { ...patch.anim } : undefined;
+      // remise à plat immédiate quand on coupe l'animation
+      const inner = selMesh.userData && selMesh.userData.anime;
+      if (inner && !estAnimee({ anim: selMesh.userData.anim })) inner.rotation.set(0, 0, 0);
+    }
+    if (patch.model !== undefined && patch.model !== selMesh.userData.model) {
+      // changement de modèle : on reconstruit l'objet en gardant la transformation
+      const garde = readMesh(selMesh);
+      garde.model = patch.model;
+      const id = garde.id;
+      scene.remove(selMesh);
+      meshes.delete(id);
+      const i = platforms.findIndex((x) => x.id === id);
+      if (i >= 0) platforms[i] = garde;
+      selMesh = addMesh(garde);
+      transform.attach(selMesh);
+      boxHelper.setFromObject(selMesh);
+      onSelect(readMesh(selMesh));
+      commit();
+      return;
+    }
     if (patch.color !== undefined) {
       selMesh.userData.color = patch.color || undefined;
       selMesh.material = matFor(selMesh.userData.role, selMesh.userData.color);
@@ -298,6 +374,30 @@ export function createMarbleEditor3D(canvas, opts = {}) {
       orbit.update();
     }
   }
+  // Pilotés par la hiérarchie du Studio (œil et cadenas).
+  // Active ou coupe l'aperçu des animations dans l'éditeur.
+  function setApercuAnim(on) {
+    apercuAnim = !!on;
+    if (!apercuAnim) {
+      for (const [, m] of meshes) {
+        const inner = m.userData && m.userData.anime;
+        if (inner) inner.rotation.set(0, 0, 0);
+      }
+    }
+  }
+  function setPieceFlags(id, flags) {
+    const m = meshes.get(id);
+    if (!m) return;
+    if (flags.hidden !== undefined) {
+      m.visible = !flags.hidden;
+      if (flags.hidden && selMesh === m) select(null);
+    }
+    if (flags.locked !== undefined) {
+      m.userData.locked = !!flags.locked;
+      if (flags.locked && selMesh === m) select(null);
+    }
+    if (flags.name !== undefined) m.userData.name = flags.name || undefined;
+  }
   function setPlatforms(arr) {
     platforms = (arr || []).map(clonePlat);
     transform.detach();
@@ -324,7 +424,7 @@ export function createMarbleEditor3D(canvas, opts = {}) {
       duplicateSelected();
     }
   }
-  window.addEventListener("keydown", onKey);
+  if (handleKeys) window.addEventListener("keydown", onKey);
 
   // ----- Boucle de rendu -----
   let raf = 0;
@@ -332,6 +432,17 @@ export function createMarbleEditor3D(canvas, opts = {}) {
     if (disposed) return;
     raf = requestAnimationFrame(loop);
     orbit.update();
+    // Aperçu des obstacles animés. L'animation ne touche que le groupe
+    // INTÉRIEUR : la rotation réglée par l'utilisateur et le gizmo restent
+    // intacts. Désactivable pour travailler sur une pièce immobile.
+    if (apercuAnim) {
+      const t = (performance.now() - t0Anim) / 1000;
+      for (const [, m] of meshes) {
+        if (m.userData && m.userData.anime && m.userData.anim) {
+          appliquerAnim(m, { anim: m.userData.anim }, t);
+        }
+      }
+    }
     if (boxHelper.visible && selMesh) boxHelper.setFromObject(selMesh);
     renderer.render(scene, camera);
   }
@@ -347,7 +458,7 @@ export function createMarbleEditor3D(canvas, opts = {}) {
     disposed = true;
     cancelAnimationFrame(raf);
     window.removeEventListener("resize", resize);
-    window.removeEventListener("keydown", onKey);
+    if (handleKeys) window.removeEventListener("keydown", onKey);
     transform.detach();
     transform.dispose();
     orbit.dispose();
@@ -362,6 +473,7 @@ export function createMarbleEditor3D(canvas, opts = {}) {
 
   return {
     addPlatform,
+    addModel,
     deleteSelected,
     duplicateSelected,
     setMode,
@@ -370,6 +482,8 @@ export function createMarbleEditor3D(canvas, opts = {}) {
     frameAll,
     focusSelected,
     select,
+    setApercuAnim,
+    setPieceFlags,
     setPlatforms,
     getPlatforms,
     resize,

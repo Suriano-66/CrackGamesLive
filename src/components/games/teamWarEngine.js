@@ -16,6 +16,7 @@
 //   focusPlayer, getBoard, getInfo, startRace, stopRace, setAutoRace, loadLevel
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
+import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, vecteurAxe, appliquerAnim } from "./assets.js";
 
 // ----- Paramètres de jeu -----
 const MAX_LIVE = 120;          // combattants simultanés (budget de rendu)
@@ -85,9 +86,23 @@ const FALLBACK_PLATFORMS = [
   { id: "bmp2", role: "bumper", pos: [12, 2.6, 8], size: [3, 3, 3], rot: [0, 0, 0] },
 ];
 
-// Nombre de combattants offerts selon la valeur du cadeau.
-function fightersForGift(diamonds, count) {
-  const v = Math.max(0, diamonds) * Math.max(1, count || 1);
+// Config des cadeaux, partagée avec la course de billes (réglée par compte
+// depuis l'app Streamer). Même forme que côté marbleRaceEngine.
+const DEFAULT_GIFT = { byGift: {}, default: null, maxPerPlayer: MAX_PER_PLAYER };
+
+// Nombre de combattants offerts. Si le streamer a défini une règle pour ce
+// cadeau, elle prime ; sinon on retombe sur un barème basé sur les diamants.
+function fightersForGift(giftName, diamonds, count, cfg) {
+  const c = cfg || DEFAULT_GIFT;
+  const n = Math.max(1, count || 1);
+  const regle =
+    c.byGift && giftName && c.byGift[giftName] != null
+      ? Number(c.byGift[giftName])
+      : c.default != null
+        ? Number(c.default)
+        : null;
+  if (regle != null && isFinite(regle)) return Math.max(0, Math.floor(regle * n));
+  const v = Math.max(0, Number(diamonds) || 0) * n;
   if (v < 5) return 1;
   if (v < 20) return 2;
   if (v < 50) return 3;
@@ -177,6 +192,8 @@ export function createTeamWar3D(canvas, opts = {}) {
   let settings = (opts.level && opts.level.settings) || {};
   let cameraPref = settings.camera || "auto";
   let teamMode = settings.teamMode || "equilibre";
+  let giftConfig = Object.assign({}, DEFAULT_GIFT, opts.giftConfig || {});
+  const assetsBase = opts.assetsBase || "../assets/models/";
   let disposed = false;
 
   // ----- Rendu -----
@@ -252,6 +269,7 @@ export function createTeamWar3D(canvas, opts = {}) {
     fighters: [],
     spawnQueue: [],
     pieceMeshes: [],
+    animes: [], // obstacles animés : { piece, obj, corps, base }
     pieceBodies: [],
     spawn: { rouge: null, bleu: null },
     center: new THREE.Vector3(0, 0, 0),
@@ -333,6 +351,7 @@ export function createTeamWar3D(canvas, opts = {}) {
     for (const b of S.pieceBodies) world.removeBody(b);
     S.pieceMeshes = [];
     S.pieceBodies = [];
+    S.animes = [];
   }
 
   function buildArena() {
@@ -347,6 +366,42 @@ export function createTeamWar3D(canvas, opts = {}) {
       const q = pieceQuat(pl.rot || [0, 0, 0]);
       // Les pièces de l'ancienne version ne sont plus que du décor sans collision.
       const legacy = LEGACY_ROLES.has(role);
+
+      // --- Modèle 3D de la bibliothèque ---
+      if (estModele(pl)) {
+        const obj = creerObjetModele(pl, { base: assetsBase });
+        obj.position.set(pos[0], pos[1], pos[2]);
+        obj.quaternion.copy(q);
+        obj.scale.set(size[0] || 1, size[1] || 1, size[2] || 1);
+        scene.add(obj);
+        S.pieceMeshes.push(obj);
+        const anime = estAnimee(pl);
+        if (pl.solid) {
+          const col = collisionModele(pl);
+          // Un obstacle animé a besoin d'un corps CINÉMATIQUE : un corps
+          // statique traverserait les billes sans jamais les projeter.
+          const corps = new CANNON.Body({
+            mass: 0,
+            type: anime ? CANNON.Body.KINEMATIC : CANNON.Body.STATIC,
+            material: matGround,
+          });
+          // La forme est DÉCALÉE par rapport à l'origine du corps : l'origine
+          // reste le pivot, donc faire tourner le corps fait balayer le marteau.
+          corps.addShape(
+            new CANNON.Box(new CANNON.Vec3(col.demi[0], col.demi[1], col.demi[2])),
+            new CANNON.Vec3(col.centre[0], col.centre[1], col.centre[2]),
+          );
+          corps.position.set(pos[0], pos[1], pos[2]);
+          corps.quaternion.set(q.x, q.y, q.z, q.w);
+          corps.updateMassProperties();
+          world.addBody(corps);
+          S.pieceBodies.push(corps);
+          if (anime) S.animes.push({ piece: pl, obj, corps, base: q.clone() });
+        } else if (anime) {
+          S.animes.push({ piece: pl, obj, corps: null, base: q.clone() });
+        }
+        continue;
+      }
 
       const mesh = new THREE.Mesh(_unit, pieceMat(legacy ? "arene" : role, pl.color));
       mesh.scale.set(Math.max(0.2, size[0]), Math.max(0.2, size[1]), Math.max(0.2, size[2]));
@@ -660,18 +715,20 @@ export function createTeamWar3D(canvas, opts = {}) {
     }
     return p;
   }
-  function handleGift(id, name, avatar, diamonds, count) {
+  function handleGift(id, name, avatar, giftName, diamonds, count) {
     if (!id) return;
     const p = ensurePlayer(id, name, avatar);
-    const n = fightersForGift(Number(diamonds) || 1, Number(count) || 1);
+    const n = fightersForGift(giftName, diamonds, count, giftConfig);
+    if (n <= 0) return;
     p.sent += n;
     // Le cadeau alimente TOUJOURS l'effectif de la prochaine manche, jamais la
     // manche en cours : une fois lancée, plus personne n'entre sur le terrain.
-    p.roster = Math.min(MAX_PER_PLAYER, p.roster + n);
+    const cap = Math.min(MAX_PER_PLAYER, giftConfig.maxPerPlayer || MAX_PER_PLAYER);
+    p.roster = Math.min(cap, p.roster + n);
   }
   function handleEvent(e) {
     if (!e) return;
-    if (e.type === "gift") handleGift(e.userId, e.nickname, e.avatar, e.diamonds, e.count);
+    if (e.type === "gift") handleGift(e.userId, e.nickname, e.avatar, e.giftName, e.diamonds, e.count);
     else if (e.type === "connected") S.connected = true;
     else if (e.type === "disconnected") S.connected = false;
   }
@@ -1264,6 +1321,31 @@ export function createTeamWar3D(canvas, opts = {}) {
     for (const [pid, entry] of labelCache) if (!shown.has(pid)) entry.sprite.visible = false;
   }
 
+// ───── Obstacles animés ─────
+  // On fait tourner le visuel ET le corps physique, et on renseigne la vitesse
+  // angulaire : sans elle, le solveur ne transmet aucune impulsion et le
+  // marteau traverserait sans projeter quoi que ce soit.
+  const _axeQuat = new THREE.Quaternion();
+  const _axeVec = new THREE.Vector3();
+  const _qFinal = new THREE.Quaternion();
+  function majAnimes(tSec) {
+    for (const a of S.animes) {
+      const cfg = animDe(a.piece);
+      const ang = appliquerAnim(a.obj, a.piece, tSec);
+      if (!a.corps) continue;
+      const v = vecteurAxe(cfg.axe);
+      _axeVec.set(v[0], v[1], v[2]);
+      _axeQuat.setFromAxisAngle(_axeVec, ang);
+      _qFinal.copy(a.base).multiply(_axeQuat);
+      a.corps.quaternion.set(_qFinal.x, _qFinal.y, _qFinal.z, _qFinal.w);
+      const w = vitesseAnim(cfg, tSec);
+      // l'axe de rotation est exprimé dans le repère de la pièce
+      _axeVec.set(v[0], v[1], v[2]).applyQuaternion(a.base).multiplyScalar(w);
+      a.corps.angularVelocity.set(_axeVec.x, _axeVec.y, _axeVec.z);
+      a.corps.velocity.set(0, 0, 0);
+    }
+  }
+
   // ----- Boucle principale -----
   let raf = 0;
   let last = 0;
@@ -1289,6 +1371,7 @@ export function createTeamWar3D(canvas, opts = {}) {
       if (p) spawnFighter(p);
     }
 
+    majAnimes(now / 1000);
     tickPhases(now);
     updateFighters(now);
     world.step(1 / 60, dt, 3);
@@ -1409,6 +1492,9 @@ export function createTeamWar3D(canvas, opts = {}) {
   function setAutoRace(v) {
     S.autoRace = !!v;
   }
+  function setGiftConfig(cfg) {
+    if (cfg && typeof cfg === "object") giftConfig = Object.assign({}, giftConfig, cfg);
+  }
   function setTeamMode(m) {
     if (m === "equilibre" || m === "alterne" || m === "pseudo") teamMode = m;
   }
@@ -1493,6 +1579,7 @@ export function createTeamWar3D(canvas, opts = {}) {
     startRace,
     stopRace,
     setAutoRace,
+    setGiftConfig,
     setTeamMode,
     loadLevel,
   };
