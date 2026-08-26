@@ -33,14 +33,19 @@ const ROLE_COLORS = {
   wall: 0xff3c5f,
 };
 
-function marblesForGift(diamonds, count) {
-  const v = Math.max(0, diamonds) * Math.max(1, count || 1);
-  if (v < 5) return 1;
-  if (v < 20) return 2;
-  if (v < 50) return 3;
-  if (v < 100) return 5;
-  if (v < 300) return 7;
-  return 10;
+// Config cadeaux → billes (réglable depuis l'app Streamer).
+//  byGift : { "Rose": 1, "Lion": 50, ... } (billes par cadeau nommé)
+//  default : billes pour un cadeau non listé · maxPerPlayer : plafond par joueur
+const DEFAULT_GIFT = { byGift: {}, default: 1, maxPerPlayer: 100 };
+function marblesForGift(giftName, count, cfg) {
+  const c = cfg || DEFAULT_GIFT;
+  const per =
+    c.byGift && giftName && c.byGift[giftName] != null
+      ? Number(c.byGift[giftName])
+      : c.default != null
+        ? Number(c.default)
+        : 1;
+  return Math.max(0, Math.floor((isFinite(per) ? per : 1) * Math.max(1, count || 1)));
 }
 function hashHue(s) {
   let h = 0;
@@ -157,6 +162,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     frozen: false, // billes retenues pendant le compte à rebours
     countdownStart: 0,
     autoRace: opts.autoRace !== false, // true = les courses s'enchaînent seules
+    giftConfig: Object.assign({}, DEFAULT_GIFT, opts.giftConfig || {}),
     frameDt: 0.016,
     free: { pos: new THREE.Vector3(0, 40, -30), yaw: 0, pitch: -0.3, keys: new Set(), fast: false, slow: false },
   };
@@ -424,15 +430,16 @@ export function createMarbleRace3D(canvas, opts = {}) {
     }
     return p;
   }
-  function handleGift(userId, nickname, avatar, diamonds, count) {
+  function handleGift(userId, nickname, avatar, giftName, count) {
     const p = ensurePlayer(userId, nickname, avatar);
-    if (p.ballCount >= MAX_BALLS) {
+    const cap = Math.min(MAX_BALLS, S.giftConfig.maxPerPlayer || MAX_BALLS);
+    if (p.ballCount >= cap) {
       p.full = true;
       return;
     }
     const before = p.ballCount;
-    p.ballCount = Math.min(MAX_BALLS, p.ballCount + marblesForGift(diamonds, count));
-    if (p.ballCount >= MAX_BALLS) p.full = true;
+    p.ballCount = Math.min(cap, p.ballCount + marblesForGift(giftName, count, S.giftConfig));
+    if (p.ballCount >= cap) p.full = true;
     const gained = p.ballCount - before;
     if (S.phase !== "intermission" && gained > 0) queueSpawns(p, gained);
   }
@@ -789,7 +796,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
 
   // ----- API -----
   function handleEvent(e) {
-    if (e && e.type === "gift") handleGift(e.userId, e.nickname, e.avatar, e.diamonds, e.count);
+    if (e && e.type === "gift") handleGift(e.userId, e.nickname, e.avatar, e.giftName, e.count);
     else if (e && e.type === "connected") S.connected = true;
     else if (e && e.type === "disconnected") S.connected = false;
   }
@@ -851,6 +858,9 @@ export function createMarbleRace3D(canvas, opts = {}) {
   }
   function setAutoRace(v) {
     S.autoRace = !!v;
+  }
+  function setGiftConfig(cfg) {
+    if (cfg && typeof cfg === "object") S.giftConfig = Object.assign({}, S.giftConfig, cfg);
   }
   function loadLevel(lvl) {
     if (lvl && Array.isArray(lvl.platforms) && lvl.platforms.length) levelPlatforms = lvl.platforms;
@@ -970,6 +980,7 @@ export function createMarbleRace3D(canvas, opts = {}) {
     startRace: startRaceNow,
     stopRace: stopRaceNow,
     setAutoRace,
+    setGiftConfig,
     loadLevel,
   };
 }
