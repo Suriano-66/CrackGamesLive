@@ -3,9 +3,33 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { isStaff } from "@/lib/rbac";
 import { parseLevelData } from "@/lib/levels";
-import { caller, lockActive, MAX_VERSIONS } from "@/lib/levelApi";
+import { caller, lockActive, lockInfo, MAX_VERSIONS } from "@/lib/levelApi";
 
 export const dynamic = "force-dynamic";
+
+// Lit un seul niveau. Sert au suivi en direct du Studio : l'éditeur qui n'a pas
+// la main interroge cette route pour rejouer, chez lui, le niveau tel que son
+// collègue est en train de le construire — sans télécharger toute la liste.
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const who = await caller(req);
+  if (!who) return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
+  const { id } = await ctx.params;
+  const l = await prisma.level.findUnique({ where: { id } });
+  if (!l) return NextResponse.json({ error: "Niveau introuvable." }, { status: 404 });
+  return NextResponse.json({
+    level: {
+      id: l.id,
+      gameType: l.gameType,
+      name: l.name,
+      data: l.data,
+      active: l.active,
+      createdByName: l.createdByName,
+      updatedByName: l.updatedByName,
+      updatedAt: l.updatedAt,
+      ...lockInfo(l),
+    },
+  });
+}
 
 const patchSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
