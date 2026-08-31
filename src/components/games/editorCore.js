@@ -19,7 +19,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { creerObjetModele, estModele, modeleDef, appliquerAnim, estAnimee } from "./assets.js";
+import { creerObjetModele, estModele, modeleDef, appliquerAnim, estAnimee, angleAnim, offsetAnim, vecteurAxe } from "./assets.js";
 
 export const D2R = Math.PI / 180;
 export const R2D = 180 / Math.PI;
@@ -79,6 +79,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   const roleDefaut = profil.roleDefaut || "track";
   const COULEURS = profil.couleurs || {};
   const TAILLES = profil.tailles || {};
+  const ANIM_DEFAUTS = profil.animDefauts || {}; // anim par défaut selon le rôle
   const UNIQUES = profil.uniques instanceof Set ? profil.uniques : new Set(profil.uniques || []);
   const DECALAGE_DUP = profil.decalageDup || [4, 0, 4];
   const CADRAGE = profil.cadrage || [0.9, 0.9, -1.2];
@@ -266,6 +267,12 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     selIds = selIds.filter((i) => meshes.has(i));
     if (!selMesh || !meshes.has(selMesh.userData.id)) {
       selMesh = selIds.length ? meshes.get(selIds[selIds.length - 1]) || null : null;
+    }
+    // Une pièce animée qu'on sélectionne revient à sa pose de base : on édite
+    // toujours la vraie transformation, jamais une image de l'animation.
+    for (const id of selIds) {
+      const m = meshes.get(id);
+      if (m && !(m.userData && m.userData.anime)) restoreBaseMesh(id, m);
     }
     transform.detach();
     if (canEdit && selIds.length > 1) {
@@ -504,6 +511,8 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       rot: [0, 0, 0],
       color: undefined,
     };
+    // Un obstacle mobile arrive déjà animé (réglable ensuite dans le panneau).
+    if (ANIM_DEFAUTS[role]) pl.anim = { ...ANIM_DEFAUTS[role] };
     pieces.push(pl);
     addMesh(pl);
     select(pl.id);
@@ -785,9 +794,10 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   function setApercuAnim(on) {
     apercuAnim = !!on;
     if (!apercuAnim) {
-      for (const [, m] of meshes) {
+      for (const [id, m] of meshes) {
         const interne = m.userData && m.userData.anime;
         if (interne) interne.rotation.set(0, 0, 0);
+        else restoreBaseMesh(id, m); // boîte animée → retour à la pose de base
       }
     }
   }
@@ -841,6 +851,53 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   ecouter(window, "blur", viderTouches);
   if (handleKeys) ecouter(window, "keydown", onKey);
 
+  // ─────────── Aperçu des boîtes animées (spinner / plateforme mobile) ───────
+  // On anime la VRAIE boîte (sa rotation/position), jamais les données : une
+  // pièce désélectionnée n'est jamais relue, et on la remet à sa pose de base
+  // dès qu'on la sélectionne. Comme l'échelle est portée par la boîte, la
+  // faire tourner ne la déforme pas.
+  const _animQ = new THREE.Quaternion();
+  const _animS = new THREE.Quaternion();
+  const _animB = new THREE.Quaternion();
+  const _animV = new THREE.Vector3();
+  const _animE = new THREE.Euler();
+  // Animation effective d'une boîte : son anim propre, sinon le défaut du rôle.
+  // Renvoie null si la pièce ne doit pas bouger (modèle, ou anim « aucune »).
+  function effAnimBox(id) {
+    const pl = pieces.find((p) => p.id === id);
+    if (!pl || pl.role === "modele") return null;
+    const def = ANIM_DEFAUTS[pl.role];
+    const a = pl.anim ? Object.assign({}, def || {}, pl.anim) : def || pl.anim || null;
+    if (!a || !a.type || a.type === "aucune" || !(Number(a.vitesse) > 0)) return null;
+    return a;
+  }
+  function restoreBaseMesh(id, m) {
+    const pl = pieces.find((p) => p.id === id);
+    if (!pl) return;
+    m.position.set(pl.pos[0], pl.pos[1], pl.pos[2]);
+    m.rotation.set((pl.rot[0] || 0) * D2R, (pl.rot[1] || 0) * D2R, (pl.rot[2] || 0) * D2R, "XYZ");
+  }
+  function animerBoite(m, id, a, t) {
+    const pl = pieces.find((p) => p.id === id);
+    if (!pl) return;
+    const br = pl.rot || [0, 0, 0];
+    const bx = pl.pos || [0, 0, 0];
+    _animB.setFromEuler(_animE.set((br[0] || 0) * D2R, (br[1] || 0) * D2R, (br[2] || 0) * D2R, "XYZ"));
+    const v = vecteurAxe(a.axe);
+    if (a.type === "translation") {
+      const off = offsetAnim(a, t);
+      _animV.set(v[0] * off, v[1] * off, v[2] * off).applyQuaternion(_animB);
+      m.position.set(bx[0] + _animV.x, bx[1] + _animV.y, bx[2] + _animV.z);
+      m.rotation.set((br[0] || 0) * D2R, (br[1] || 0) * D2R, (br[2] || 0) * D2R, "XYZ");
+    } else {
+      const ang = angleAnim(a, t);
+      _animS.setFromAxisAngle(_animV.set(v[0], v[1], v[2]), ang);
+      _animQ.copy(_animB).multiply(_animS);
+      m.quaternion.copy(_animQ);
+      m.position.set(bx[0], bx[1], bx[2]);
+    }
+  }
+
   // ───────────────────────── Boucle de rendu ────────────────────────────────
   let raf = 0;
   let tPrec = performance.now();
@@ -857,8 +914,16 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     // intacts. Désactivable pour travailler sur une pièce immobile.
     if (apercuAnim) {
       const t = (now - t0Anim) / 1000;
-      for (const [, m] of meshes) {
-        if (m.userData && m.userData.anime && m.userData.anim) appliquerAnim(m, { anim: m.userData.anim }, t);
+      for (const [id, m] of meshes) {
+        if (m.userData && m.userData.anime && m.userData.anim) {
+          appliquerAnim(m, { anim: m.userData.anim }, t);
+          continue;
+        }
+        // Boîte animée : on ne bouge que les pièces NON sélectionnées (une
+        // pièce en cours d'édition reste au repos, à sa pose de base).
+        if (selIds.includes(id)) continue;
+        const a = effAnimBox(id);
+        if (a) animerBoite(m, id, a, t);
       }
     }
     if (contours.length) majContours();
