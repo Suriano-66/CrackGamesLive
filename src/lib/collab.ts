@@ -61,10 +61,10 @@ export function isLoaded(levelId: string): boolean {
   return !!rooms.get(levelId)?.loaded;
 }
 // Amorce l'état depuis la base au premier arrivant (idempotent).
-export function seed(levelId: string, platforms: Piece[], settings: Record<string, unknown>, save: SaveFn): void {
+export function seed(levelId: string, platforms: readonly { id: string }[], settings: Record<string, unknown>, save: SaveFn): void {
   const r = room(levelId);
   if (r.loaded) return;
-  r.pieces = new Map((platforms || []).filter((p) => p && p.id).map((p) => [p.id, p]));
+  r.pieces = new Map((platforms || []).filter((p) => p && p.id).map((p) => [p.id, p as Piece]));
   r.settings = settings || {};
   r.loaded = true;
   r.save = save;
