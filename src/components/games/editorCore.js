@@ -898,6 +898,64 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     }
   }
 
+  // ───────────────── Co-édition : ops distantes & présence des pairs ─────────
+  // Applique une opération reçue d'un autre éditeur SANS déclencher onChange :
+  // aucune rediffusion réseau (sinon boucle infinie d'échos).
+  function applyRemote(op) {
+    if (!op || typeof op !== "object") return;
+    if (op.type === "upsert" && op.piece && op.piece.id) {
+      const pl = clonePiece(op.piece, roleDefaut);
+      const old = meshes.get(pl.id);
+      if (old) {
+        scene.remove(old);
+        meshes.delete(pl.id);
+      }
+      const i = pieces.findIndex((p) => p.id === pl.id);
+      if (i >= 0) pieces[i] = pl;
+      else pieces.push(pl);
+      addMesh(pl);
+      if (selIds.includes(pl.id)) majSelection();
+    } else if (op.type === "remove" && op.id) {
+      const m = meshes.get(op.id);
+      if (m) {
+        scene.remove(m);
+        meshes.delete(op.id);
+      }
+      pieces = pieces.filter((p) => p.id !== op.id);
+      if (selIds.includes(op.id)) selIds = selIds.filter((x) => x !== op.id);
+      majSelection();
+    }
+    rebuildPeerContours();
+  }
+
+  // Surbrillance colorée des pièces sélectionnées par les autres éditeurs.
+  let peerSel = []; // [{ color, ids:[pieceId] }]
+  const peerGroup = new THREE.Group();
+  scene.add(peerGroup);
+  function rebuildPeerContours() {
+    for (const c of peerGroup.children.slice()) {
+      peerGroup.remove(c);
+      c.geometry?.dispose?.();
+    }
+    for (const peer of peerSel) {
+      const col = new THREE.Color(peer.color || "#5a9bff");
+      for (const id of peer.ids || []) {
+        const m = meshes.get(id);
+        if (!m) continue;
+        const h = new THREE.BoxHelper(m, col);
+        h.material.depthTest = false;
+        h.material.transparent = true;
+        h.material.opacity = 0.9;
+        h.renderOrder = 3;
+        peerGroup.add(h);
+      }
+    }
+  }
+  function setPeerSelections(list) {
+    peerSel = Array.isArray(list) ? list : [];
+    rebuildPeerContours();
+  }
+
   // ───────────────────────── Boucle de rendu ────────────────────────────────
   let raf = 0;
   let tPrec = performance.now();
@@ -927,6 +985,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       }
     }
     if (contours.length) majContours();
+    if (peerGroup.children.length) for (const h of peerGroup.children) h.update();
     renderer.render(scene, camera);
   }
   function resize() {
@@ -985,6 +1044,8 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     setPieceFlags,
     setPlatforms,
     getPlatforms,
+    applyRemote,
+    setPeerSelections,
     resize,
     dispose,
   };

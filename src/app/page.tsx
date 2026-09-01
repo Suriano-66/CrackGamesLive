@@ -70,18 +70,18 @@ export default function Home() {
         <div className="wrap hero-grid">
           <div>
             <span className="pill">
-              <span className="pulse" /> Overlays prêts pour OBS · aucune
-              installation
+              <span className="pulse" /> Une app légère · tes viewers jouent
+              avec leurs cadeaux TikTok
             </span>
             <h1>
               Des jeux qui font <span className="hl">vivre ton live</span> —
-              24h/24, sans rien faire.
+              pilotés par tes viewers.
             </h1>
             <p className="lead">
-              CrackGamesLive te fournit une bibliothèque de mini-jeux
-              interactifs à afficher en surimpression sur tes lives TikTok. Tu
-              les lances, ils tournent tout seuls en boucle, et ton audience
-              reste scotchée.
+              CrackGamesLive, c&apos;est une petite application à lancer pendant
+              ton live TikTok : tes viewers font apparaître l&apos;action en
+              envoyant des cadeaux, et le jeu s&apos;affiche en surimpression via
+              OBS. Tu installes, tu lances, et ton audience prend les commandes.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href="#pricing">
@@ -93,7 +93,7 @@ export default function Home() {
             </div>
             <div className="hero-note">
               <span>
-                <Check /> Sans intervention pendant le live
+                <Check /> Réagit aux cadeaux TikTok en direct
               </span>
               <span>
                 <Check /> Paiement sécurisé Stripe
@@ -115,7 +115,7 @@ export default function Home() {
           </span>
           <span className="dot" />
           <span>
-            Compatible <b>OBS</b> &amp; Streamlabs
+            Se capture dans <b>OBS</b> &amp; Streamlabs
           </span>
           <span className="dot" />
           <span>
@@ -123,7 +123,7 @@ export default function Home() {
           </span>
           <span className="dot" />
           <span>
-            <b>Zéro code</b>, une simple URL
+            <b>Zéro code</b>, une app à lancer
           </span>
           <span className="dot" />
           <span>
@@ -137,11 +137,12 @@ export default function Home() {
         <div className="wrap">
           <div className="sec-head">
             <span className="eyebrow">Catalogue</span>
-            <h2>Des jeux qui tournent en autonomie</h2>
+            <h2>Des jeux qui réagissent à ton audience</h2>
             <p>
-              Chaque jeu est une source navigateur à coller dans OBS. Il
-              redémarre tout seul, en boucle, sans que tu aies à toucher à quoi
-              que ce soit pendant ton live.
+              Tu lances l&apos;application, tu captures sa fenêtre dans OBS, et le
+              jeu s&apos;affiche sur ton live. Les cadeaux de tes viewers font
+              apparaître l&apos;action en temps réel — et entre deux temps forts,
+              ça continue de tourner tout seul.
             </p>
           </div>
           <div className="games">
@@ -274,33 +275,33 @@ export default function Home() {
             <span className="eyebrow">3 étapes</span>
             <h2>Prêt à diffuser en 5 minutes</h2>
             <p>
-              Aucune compétence technique. Si tu sais faire un copier-coller, tu
-              sais utiliser CrackGamesLive.
+              Aucune compétence technique. Si tu sais installer une application,
+              tu sais utiliser CrackGamesLive.
             </p>
           </div>
           <div className="steps">
             <div className="step">
               <div className="num">01</div>
-              <h3>Choisis ton jeu</h3>
+              <h3>Installe l&apos;application</h3>
               <p>
-                Parcours le catalogue depuis ton espace membre et personnalise
-                les couleurs, titres et réglages du jeu.
+                Depuis ton espace membre, télécharge l&apos;app CrackGames Stream
+                et connecte-la à ton compte TikTok en un clic.
               </p>
             </div>
             <div className="step">
               <div className="num">02</div>
-              <h3>Colle l&apos;URL dans OBS</h3>
+              <h3>Capture-la dans OBS</h3>
               <p>
-                Ajoute une « source navigateur » avec ton lien unique. Le jeu
-                s&apos;affiche en surimpression sur ton live.
+                Ajoute la fenêtre de l&apos;app comme source dans OBS ou
+                Streamlabs. Le jeu s&apos;affiche en surimpression sur ton live.
               </p>
             </div>
             <div className="step">
               <div className="num">03</div>
-              <h3>Lance et oublie</h3>
+              <h3>Tes viewers jouent</h3>
               <p>
-                Le jeu tourne en boucle tout seul, 24h/24. Tu streames, il anime
-                ton audience sans que tu interviennes.
+                Leurs cadeaux TikTok font apparaître l&apos;action en direct. Entre
+                les temps forts, le jeu continue de tourner tout seul.
               </p>
             </div>
           </div>
@@ -437,10 +438,10 @@ export default function Home() {
                 <Chevron />
               </summary>
               <p>
-                Chaque jeu est une page web avec un lien unique. Tu l&apos;ajoutes
-                dans OBS ou Streamlabs comme « source navigateur » et il
-                apparaît en surimpression sur ta caméra ou ton écran. Aucun
-                logiciel à installer.
+                Tu télécharges l&apos;application CrackGames Stream depuis ton
+                espace membre, tu la lances, et tu ajoutes sa fenêtre comme source
+                dans OBS ou Streamlabs. Le jeu apparaît alors en surimpression sur
+                ta caméra ou ton écran.
               </p>
             </details>
             <details>
@@ -449,22 +450,21 @@ export default function Home() {
                 <Chevron />
               </summary>
               <p>
-                Non. Les jeux sont conçus pour tourner en autonomie : ils
-                démarrent, désignent un résultat, puis recommencent en boucle,
-                24h/24. Tu peux les laisser tourner même en live automatique sans
-                y toucher.
+                Non. Le jeu s&apos;anime tout seul dès que tes viewers envoient des
+                cadeaux, et continue de tourner entre les temps forts. Tu peux le
+                laisser tourner sans y toucher pendant ton live.
               </p>
             </details>
             <details>
               <summary>
-                Les jeux réagissent-ils aux commentaires des viewers ?
+                Les jeux réagissent-ils aux cadeaux des viewers ?
                 <Chevron />
               </summary>
               <p>
-                Cette première version propose des overlays autonomes qui
-                tournent en boucle et invitent l&apos;audience à réagir dans le
-                chat. Une évolution connectée aux événements TikTok en temps réel
-                (commentaires, cadeaux, likes) est prévue en option.
+                Oui — c&apos;est tout le concept. Quand un viewer envoie un cadeau
+                TikTok, ça déclenche l&apos;action dans le jeu : par exemple, chaque
+                cadeau fait apparaître des concurrents dans la course. Tu règles
+                toi-même combien de participants chaque cadeau rapporte.
               </p>
             </details>
             <details>
@@ -480,13 +480,14 @@ export default function Home() {
             </details>
             <details>
               <summary>
-                Est-ce compatible avec TikTok Live Studio ?
+                Avec quels logiciels de streaming ça marche ?
                 <Chevron />
               </summary>
               <p>
-                Les jeux fonctionnent avec tout logiciel acceptant une source
-                navigateur (OBS, Streamlabs). L&apos;intégration se fait via
-                l&apos;URL de ton jeu, quel que soit ton outil de diffusion.
+                Avec tout logiciel capable de capturer une fenêtre (OBS,
+                Streamlabs…). L&apos;application se connecte à ton live TikTok pour
+                recevoir les cadeaux, et tu captures simplement sa fenêtre dans
+                ton outil de diffusion.
               </p>
             </details>
           </div>
