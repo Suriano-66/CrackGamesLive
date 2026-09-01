@@ -17,7 +17,7 @@
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, vecteurAxe, appliquerAnim } from "./assets.js";
-import { bordsDe } from "./pieces.js";
+import { bordsDe, estPolygone, geometriePolygone, prismesDe } from "./pieces.js";
 
 // ----- Paramètres de jeu -----
 const MAX_LIVE = 120;          // combattants simultanés (budget de rendu)
@@ -406,7 +406,8 @@ export function createTeamWar3D(canvas, opts = {}) {
         continue;
       }
 
-      const mesh = new THREE.Mesh(_unit, pieceMat(legacy ? "arene" : role, pl.color));
+      const geoPoly = estPolygone(pl) ? geometriePolygone(pl) : null;
+      const mesh = new THREE.Mesh(geoPoly || _unit, pieceMat(legacy ? "arene" : role, pl.color));
       mesh.scale.set(Math.max(0.2, size[0]), Math.max(0.2, size[1]), Math.max(0.2, size[2]));
       mesh.position.set(pos[0], pos[1], pos[2]);
       mesh.quaternion.copy(q);
@@ -430,11 +431,27 @@ export function createTeamWar3D(canvas, opts = {}) {
 
       if (!legacy) {
         const body = new CANNON.Body({ mass: 0, material: role === "bumper" ? matBumper : matGround });
+        // Sol polygonal : découpé en prismes convexes posés sur le MÊME corps.
+        // Leurs faces supérieures sont exactement coplanaires, donc la surface
+        // est lisse — c'est tout l'intérêt par rapport à un assemblage de boîtes.
+        const prismes = estPolygone(pl) ? prismesDe(pl) : [];
+        if (prismes.length) {
+          for (const pr of prismes) {
+            body.addShape(
+              new CANNON.ConvexPolyhedron({
+                vertices: pr.sommets.map((v) => new CANNON.Vec3(v[0], v[1], v[2])),
+                faces: pr.faces,
+              }),
+              new CANNON.Vec3(pr.centre[0], pr.centre[1], pr.centre[2]),
+            );
+          }
+        } else {
         body.addShape(
           new CANNON.Box(
             new CANNON.Vec3(Math.max(0.1, size[0] / 2), Math.max(0.1, size[1] / 2), Math.max(0.1, size[2] / 2)),
           ),
         );
+        }
         for (const b of bords) {
           body.addShape(
             new CANNON.Box(new CANNON.Vec3(b.size[0] / 2, b.size[1] / 2, b.size[2] / 2)),

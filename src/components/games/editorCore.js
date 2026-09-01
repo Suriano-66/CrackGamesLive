@@ -20,7 +20,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { creerObjetModele, estModele, modeleDef, appliquerAnim, estAnimee, angleAnim, offsetAnim, vecteurAxe } from "./assets.js";
-import { bordsDe } from "./pieces.js";
+import { bordsDe, estPolygone, geometriePolygone } from "./pieces.js";
 
 export const D2R = Math.PI / 180;
 export const R2D = 180 / Math.PI;
@@ -53,6 +53,8 @@ export function clonePiece(p, roleDefaut) {
     // Bords intégrés (voir pieces.js) et groupe de préfab d'origine.
     rails: p.rails ? { ...p.rails } : undefined,
     grp: p.grp || undefined,
+    // Contour d'un sol polygonal (voir pieces.js).
+    pts: Array.isArray(p.pts) ? p.pts.map((c) => [c[0], c[1]]) : undefined,
   };
 }
 
@@ -225,7 +227,18 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     // Une pièce « modèle » affiche un fichier .glb ; tout le reste est une
     // boîte. Le groupe renvoyé est utilisable immédiatement (volume témoin le
     // temps du chargement), donc rien n'est asynchrone ici.
-    const mesh = estModele(pl) ? creerObjetModele(pl, { base: assetsBase }) : new THREE.Mesh(unit, matFor(pl.role, pl.color));
+    let mesh;
+    if (estModele(pl)) {
+      mesh = creerObjetModele(pl, { base: assetsBase });
+    } else if (estPolygone(pl)) {
+      // Dalle à N côtés : un maillage propre à la pièce, normalisé dans une
+      // boîte 1×1×1 pour que l'échelle de la pièce s'applique comme d'habitude.
+      const g = geometriePolygone(pl);
+      mesh = new THREE.Mesh(g || unit, matFor(pl.role, pl.color));
+      mesh.userData.geoPropre = !!g;
+    } else {
+      mesh = new THREE.Mesh(unit, matFor(pl.role, pl.color));
+    }
     mesh.scale.set(Math.max(0.05, pl.size[0]), Math.max(0.05, pl.size[1]), Math.max(0.05, pl.size[2]));
     mesh.position.set(pl.pos[0], pl.pos[1], pl.pos[2]);
     mesh.rotation.set((pl.rot[0] || 0) * D2R, (pl.rot[1] || 0) * D2R, (pl.rot[2] || 0) * D2R, "XYZ");
@@ -240,6 +253,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       name: pl.name,
       rails: pl.rails,
       grp: pl.grp,
+      pts: pl.pts,
     });
     mesh.visible = !pl.hidden;
     if (!estModele(pl)) majBords(mesh, pl);
@@ -247,8 +261,15 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     meshes.set(pl.id, mesh);
     return mesh;
   }
+  // Une dalle polygonale possède SON maillage : il faut le libérer en la
+  // retirant, sinon chaque reconstruction en laisse un sur la carte graphique.
+  function jeterMesh(m) {
+    if (!m) return;
+    scene.remove(m);
+    if (m.userData && m.userData.geoPropre) m.geometry?.dispose?.();
+  }
   function rebuildAll() {
-    for (const m of meshes.values()) scene.remove(m);
+    for (const m of meshes.values()) jeterMesh(m);
     meshes.clear();
     for (const pl of pieces) addMesh(pl);
   }
@@ -266,6 +287,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       anim: mesh.userData.anim ? { ...mesh.userData.anim } : undefined,
       rails: mesh.userData.rails ? { ...mesh.userData.rails } : undefined,
       grp: mesh.userData.grp || undefined,
+      pts: Array.isArray(mesh.userData.pts) ? mesh.userData.pts.map((c) => [c[0], c[1]]) : undefined,
       pos: [round(mesh.position.x), round(mesh.position.y), round(mesh.position.z)],
       size: [round(Math.abs(mesh.scale.x)), round(Math.abs(mesh.scale.y)), round(Math.abs(mesh.scale.z))],
       rot: [round(mesh.rotation.x * R2D), round(mesh.rotation.y * R2D), round(mesh.rotation.z * R2D)],
@@ -588,6 +610,15 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   ecouter(renderer.domElement, "pointerup", (e) => {
     if (!canEdit || e.button !== 0) return;
     if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return; // rotation caméra
+    // Plume en cours : le clic pose un sommet au lieu de sélectionner.
+    if (plume) {
+      const p = pointSurPlanPlume(e);
+      if (p) {
+        plume.pts.push(p);
+        majApercuPlume();
+      }
+      return;
+    }
     if (transform.dragging || transform.axis) return; // clic sur le gizmo
     const rect = renderer.domElement.getBoundingClientRect();
     ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -604,6 +635,113 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       else if (!additif) select(null);
     } else if (!additif) select(null);
   });
+
+  // ═════════════════════ Outil plume : tracer un sol ═══════════════════════
+  //  On clique des points dans la vue, ils se posent sur un plan horizontal à
+  //  la hauteur choisie, et l'ensemble devient UNE dalle d'un seul tenant.
+  //  C'est la réponse aux micro-marches : plus de boîtes qui se chevauchent,
+  //  donc plus rien qui accroche les billes.
+  const onPlume = typeof opts.onPlume === "function" ? opts.onPlume : null;
+  const groupePlume = new THREE.Group();
+  groupePlume.name = "__plume";
+  scene.add(groupePlume);
+  const _planPlume = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const _ptPlume = new THREE.Vector3();
+  let plume = null; // { pts:[[x,z]], hauteur }
+
+  function viderApercuPlume() {
+    for (const o of groupePlume.children.slice()) {
+      groupePlume.remove(o);
+      o.geometry?.dispose?.();
+      o.material?.dispose?.();
+    }
+  }
+  function majApercuPlume() {
+    viderApercuPlume();
+    if (!plume) return;
+    const y = plume.hauteur;
+    const pts = plume.pts;
+    const geoPt = new THREE.SphereGeometry(0.55, 10, 8);
+    for (const [x, z] of pts) {
+      const b = new THREE.Mesh(geoPt.clone(), new THREE.MeshBasicMaterial({ color: 0x4ade80, depthTest: false }));
+      b.position.set(x, y, z);
+      b.renderOrder = 7;
+      groupePlume.add(b);
+    }
+    geoPt.dispose();
+    if (pts.length >= 2) {
+      const g = new THREE.BufferGeometry().setFromPoints(pts.map(([x, z]) => new THREE.Vector3(x, y, z)));
+      const l = new THREE.LineLoop(g, new THREE.LineBasicMaterial({ color: 0x4ade80, depthTest: false }));
+      l.renderOrder = 7;
+      groupePlume.add(l);
+    }
+    if (pts.length >= 3) {
+      // Aperçu rempli : on voit tout de suite la forme du sol obtenu.
+      try {
+        const forme = new THREE.Shape(pts.map(([x, z]) => new THREE.Vector2(x, z)));
+        const g = new THREE.ShapeGeometry(forme);
+        g.rotateX(Math.PI / 2);
+        const m = new THREE.Mesh(
+          g,
+          new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthTest: false }),
+        );
+        m.position.y = y + 0.06;
+        m.renderOrder = 6;
+        groupePlume.add(m);
+      } catch {
+        /* contour dégénéré : on se contente du tracé */
+      }
+    }
+    if (onPlume) onPlume({ actif: true, n: pts.length, hauteur: y });
+  }
+  function pointSurPlanPlume(e) {
+    const rect = renderer.domElement.getBoundingClientRect();
+    ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    ray.setFromCamera(ndc, camera);
+    if (!ray.ray.intersectPlane(_planPlume, _ptPlume)) return null;
+    return [round(_ptPlume.x), round(_ptPlume.z)];
+  }
+  function demarrerPlume(hauteur) {
+    const h = Number(hauteur) || 0;
+    plume = { pts: [], hauteur: h };
+    _planPlume.constant = -h; // plan horizontal y = hauteur
+    transform.detach();
+    selIds = [];
+    selMesh = null;
+    reconstruireContours();
+    onSelect(null);
+    majApercuPlume();
+  }
+  function plumeActive() {
+    return !!plume;
+  }
+  // Change la hauteur du plan de tracé sans perdre les points déjà posés.
+  function plumeHauteur(y) {
+    if (!plume) return;
+    plume.hauteur = Number(y) || 0;
+    _planPlume.constant = -plume.hauteur;
+    majApercuPlume();
+  }
+  function plumeRetirerDernier() {
+    if (!plume || !plume.pts.length) return;
+    plume.pts.pop();
+    majApercuPlume();
+  }
+  function plumeAnnuler() {
+    plume = null;
+    viderApercuPlume();
+    if (onPlume) onPlume({ actif: false, n: 0 });
+  }
+  function plumeTerminer() {
+    if (!plume || plume.pts.length < 3) {
+      plumeAnnuler();
+      return null;
+    }
+    const res = { pts: plume.pts.map((c) => [c[0], c[1]]), hauteur: plume.hauteur };
+    plumeAnnuler();
+    return res;
+  }
 
   // ───────────────────────── Opérations ─────────────────────────────────────
   function addModel(modelId) {
@@ -663,7 +801,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     for (const id of set) {
       const m = meshes.get(id);
       if (m) {
-        scene.remove(m);
+        jeterMesh(m);
         meshes.delete(id);
       }
     }
@@ -730,7 +868,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       // Changement de modèle : on reconstruit l'objet en gardant la transformation.
       const garde = readMesh(mesh);
       garde.model = patch.model;
-      scene.remove(mesh);
+      jeterMesh(mesh);
       meshes.delete(garde.id);
       const i = pieces.findIndex((x) => x.id === garde.id);
       const neuf = addMesh(garde);
@@ -1068,7 +1206,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       const pl = clonePiece(op.piece, roleDefaut);
       const old = meshes.get(pl.id);
       if (old) {
-        scene.remove(old);
+        jeterMesh(old);
         meshes.delete(pl.id);
       }
       const i = pieces.findIndex((p) => p.id === pl.id);
@@ -1079,7 +1217,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     } else if (op.type === "remove" && op.id) {
       const m = meshes.get(op.id);
       if (m) {
-        scene.remove(m);
+        jeterMesh(m);
         meshes.delete(op.id);
       }
       pieces = pieces.filter((p) => p.id !== op.id);
@@ -1232,6 +1370,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     cancelAnimationFrame(raf);
     for (const [cible, type, fn, opt] of ecouteurs) cible.removeEventListener(type, fn, opt);
     ecouteurs.length = 0;
+    viderApercuPlume();
     viderPeers();
     transform.detach();
     transform.dispose();
@@ -1254,6 +1393,12 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   return {
     getDebug,
     getCamera,
+    demarrerPlume,
+    plumeActive,
+    plumeRetirerDernier,
+    plumeHauteur,
+    plumeAnnuler,
+    plumeTerminer,
     addPlatform,
     addModel,
     deleteSelected,

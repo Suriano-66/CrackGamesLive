@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, offsetAnim, vitesseLineaireAnim, vecteurAxe, appliquerAnim } from "./assets.js";
-import { bordsDe } from "./pieces.js";
+import { bordsDe, estPolygone, geometriePolygone, prismesDe } from "./pieces.js";
 
 // ----- Paramètres -----
 const MARBLE_R = 0.42;
@@ -460,7 +460,8 @@ export function createMarbleRace3D(canvas, opts = {}) {
       }
 
       const role = pl.role || "track";
-      const mesh = new THREE.Mesh(_unit, platMat(role, pl.color));
+      const geoPoly = estPolygone(pl) ? geometriePolygone(pl) : null;
+      const mesh = new THREE.Mesh(geoPoly || _unit, platMat(role, pl.color));
       mesh.scale.set(Math.max(0.2, size[0]), Math.max(0.2, size[1]), Math.max(0.2, size[2]));
       mesh.position.set(pos[0], pos[1], pos[2]);
       mesh.quaternion.copy(q);
@@ -505,7 +506,23 @@ export function createMarbleRace3D(canvas, opts = {}) {
           type: animated ? CANNON.Body.KINEMATIC : CANNON.Body.STATIC,
           material: role === "bumper" ? matBumper : matGround,
         });
+        // Sol polygonal : découpé en prismes convexes posés sur le MÊME corps.
+        // Leurs faces supérieures sont exactement coplanaires, donc la surface
+        // est lisse — c'est tout l'intérêt par rapport à un assemblage de boîtes.
+        const prismes = estPolygone(pl) ? prismesDe(pl) : [];
+        if (prismes.length) {
+          for (const pr of prismes) {
+            body.addShape(
+              new CANNON.ConvexPolyhedron({
+                vertices: pr.sommets.map((v) => new CANNON.Vec3(v[0], v[1], v[2])),
+                faces: pr.faces,
+              }),
+              new CANNON.Vec3(pr.centre[0], pr.centre[1], pr.centre[2]),
+            );
+          }
+        } else {
         body.addShape(new CANNON.Box(new CANNON.Vec3(half.x, half.y, half.z)));
+        }
         // Une forme de collision par bord, décalée dans le repère de la pièce.
         for (const b of bords) {
           body.addShape(
