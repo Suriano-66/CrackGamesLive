@@ -59,10 +59,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
       collab.join(id, {
         id: clientId,
         userId: who.id,
-        presence: { name, color, selection: [] },
+        presence: { name, color, selection: [], camera: null },
         send,
       });
-      collab.broadcast(id, "presence", { type: "join", id: clientId, name, color, selection: [] }, clientId);
+      collab.broadcast(id, "presence", { type: "join", id: clientId, name, color, selection: [], camera: null }, clientId);
 
       ping = setInterval(() => send("ping", Date.now()), 25000);
 
@@ -110,7 +110,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (!who || !isStaff(who.role)) return Response.json({ error: "forbidden" }, { status: 403 });
   const { id } = await ctx.params;
   const body = (await req.json().catch(() => null)) as
-    | { clientId?: string; kind?: string; op?: unknown; selection?: string[] }
+    | { clientId?: string; kind?: string; op?: unknown; selection?: string[]; camera?: collab.Camera | null }
     | null;
   if (!body || !body.clientId) return Response.json({ error: "bad_request" }, { status: 400 });
 
@@ -122,8 +122,16 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   } else if (body.kind === "presence") {
     const c = collab.getClient(id, body.clientId);
     const selection = Array.isArray(body.selection) ? body.selection : [];
-    if (c) c.presence.selection = selection;
-    collab.broadcast(id, "presence", { type: "update", id: body.clientId, selection }, body.clientId);
+    // La caméra sert au repère « d'où il regarde » chez les autres éditeurs.
+    const cam =
+      body.camera && Array.isArray(body.camera.pos) && Array.isArray(body.camera.cible)
+        ? { pos: body.camera.pos.slice(0, 3).map(Number), cible: body.camera.cible.slice(0, 3).map(Number) }
+        : null;
+    if (c) {
+      c.presence.selection = selection;
+      c.presence.camera = cam;
+    }
+    collab.broadcast(id, "presence", { type: "update", id: body.clientId, selection, camera: cam }, body.clientId);
   }
   return Response.json({ ok: true });
 }

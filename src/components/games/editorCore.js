@@ -64,6 +64,43 @@ function lumieresParDefaut(scene) {
 
 const AXES = ["x", "y", "z"];
 
+// Ramène un angle dans [-180, 180] : sans ça, tourner un peu au-delà d'un
+// demi-tour afficherait « -359° » au lieu de « 1° ».
+export function normaliserAngle(deg) {
+  return (((deg + 180) % 360) + 360) % 360 - 180;
+}
+
+// Étiquette flottante (pseudo d'un collègue) dessinée dans un canvas puis
+// posée en sprite : toujours face à la caméra, aucune dépendance.
+function creerEtiquette(texte, couleur) {
+  const c = document.createElement("canvas");
+  let ctx = c.getContext("2d");
+  const police = "600 34px system-ui, Segoe UI, sans-serif";
+  ctx.font = police;
+  const largeur = Math.ceil(ctx.measureText(texte).width) + 40;
+  c.width = largeur;
+  c.height = 62;
+  ctx = c.getContext("2d"); // redimensionner remet le contexte à zéro
+  ctx.font = police;
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = couleur;
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(1, 7, largeur - 2, 48, 18);
+    ctx.fill();
+  } else {
+    ctx.fillRect(1, 7, largeur - 2, 48);
+  }
+  ctx.fillStyle = "#0b0e16";
+  ctx.fillText(texte, 20, 32);
+  const tex = new THREE.CanvasTexture(c);
+  if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+  spr.renderOrder = 9;
+  spr.userData.ratio = largeur / 62;
+  return spr;
+}
+
 export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   const onChange = opts.onChange || (() => {});
   const onSelect = opts.onSelect || (() => {});
@@ -326,6 +363,54 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   scene.add(aimantHelper);
   const _b3 = new THREE.Box3();
 
+  // ───────────── Valeur affichée pendant un geste (le « 51° ») ─────────────
+  // Degrés en rotation, unités en déplacement, dimensions en étirement, dans
+  // un cartouche qui suit le gizmo. Sans lui, on tourne une pièce à l'aveugle.
+  const onDragInfo = typeof opts.onDragInfo === "function" ? opts.onDragInfo : null;
+  let departDrag = null;
+  const _ve = new THREE.Vector3();
+  const _vd = new THREE.Vector3();
+  function versEcran(v3) {
+    _ve.copy(v3).project(camera);
+    const r = renderer.domElement.getBoundingClientRect();
+    return { x: (_ve.x * 0.5 + 0.5) * r.width, y: (-_ve.y * 0.5 + 0.5) * r.height };
+  }
+  function fmtDelta(n) {
+    const v = Math.round(n * 100) / 100;
+    return (v > 0 ? "+" : "") + v;
+  }
+  function infoDrag() {
+    if (!onDragInfo || !departDrag) return;
+    const cible = dragMulti ? pivot : selMesh;
+    if (!cible) return;
+    let texte = "";
+    if (transform.mode === "translate") {
+      const dx = cible.position.x - departDrag.pos.x;
+      const dy = cible.position.y - departDrag.pos.y;
+      const dz = cible.position.z - departDrag.pos.z;
+      const bouts = [];
+      if (Math.abs(dx) > 1e-4) bouts.push("X " + fmtDelta(dx));
+      if (Math.abs(dy) > 1e-4) bouts.push("Y " + fmtDelta(dy));
+      if (Math.abs(dz) > 1e-4) bouts.push("Z " + fmtDelta(dz));
+      texte = bouts.length ? bouts.join("   ") : "0";
+    } else if (transform.mode === "rotate") {
+      // Amplitude par les quaternions (juste quelle que soit la rotation déjà
+      // en place), signe donné par l'axe qui a le plus bougé.
+      const q = cible.quaternion.clone().multiply(departDrag.quat.clone().invert());
+      const ampl = 2 * Math.acos(Math.min(1, Math.abs(q.w))) * R2D;
+      let plusGrand = 0;
+      for (const a of AXES) {
+        const d = normaliserAngle((cible.rotation[a] - departDrag.rot[a]) * R2D);
+        if (Math.abs(d) > Math.abs(plusGrand)) plusGrand = d;
+      }
+      texte = (plusGrand < 0 ? "−" : "") + Math.round(ampl * 10) / 10 + "°";
+    } else {
+      texte = `${round(Math.abs(cible.scale.x))} × ${round(Math.abs(cible.scale.y))} × ${round(Math.abs(cible.scale.z))}`;
+    }
+    const p = versEcran(cible.getWorldPosition(_vd));
+    onDragInfo({ texte, x: p.x, y: p.y, mode: transform.mode });
+  }
+
   function construireCacheAimant() {
     cacheBoites = [];
     if (!aimant.actif) return;
@@ -391,6 +476,10 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     onDragStart(libelleMode() + (selIds.length > 1 ? " (" + selIds.length + " pièces)" : ""));
     construireCacheAimant();
     dragMulti = selIds.length > 1;
+    const ancre = dragMulti ? pivot : selMesh;
+    departDrag = ancre
+      ? { pos: ancre.position.clone(), rot: ancre.rotation.clone(), quat: ancre.quaternion.clone(), scale: ancre.scale.clone() }
+      : null;
     if (dragMulti) {
       replacerPivot();
       for (const id of selIds) {
@@ -406,6 +495,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       onSelect(lireSelection());
     }
     majContours();
+    infoDrag();
   }
   function finDrag() {
     if (dragMulti) {
@@ -428,6 +518,8 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     }
     cacherAimant();
     majContours();
+    departDrag = null;
+    if (onDragInfo) onDragInfo(null);
     commit();
     onSelect(lireSelection());
   }
@@ -634,14 +726,16 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   // ───────────────────────── Pas / aimant / navigation ──────────────────────
   // Le pas de déplacement, de rotation et d'échelle est réglable : 0.1 pour
   // ajuster finement, 1 ou 5 pour bâtir vite.
-  const pas = { actif: false, translation: 1, rotation: 15, echelle: 0.5 };
+  // Trois interrupteurs indépendants, comme dans un vrai éditeur : on veut
+  // souvent un pas de rotation fixe (1°, 15°) SANS grille de déplacement.
+  const pas = { actifT: false, translation: 1, actifR: false, rotation: 15, actifE: false, echelle: 0.5 };
   function appliquerPas() {
-    transform.setTranslationSnap(pas.actif && pas.translation > 0 ? pas.translation : null);
-    transform.setRotationSnap(pas.actif && pas.rotation > 0 ? pas.rotation * D2R : null);
-    transform.setScaleSnap(pas.actif && pas.echelle > 0 ? pas.echelle : null);
+    transform.setTranslationSnap(pas.actifT && pas.translation > 0 ? pas.translation : null);
+    transform.setRotationSnap(pas.actifR && pas.rotation > 0 ? pas.rotation * D2R : null);
+    transform.setScaleSnap(pas.actifE && pas.echelle > 0 ? pas.echelle : null);
   }
   function setSnap(on) {
-    pas.actif = !!on;
+    pas.actifT = pas.actifR = pas.actifE = !!on;
     appliquerPas();
   }
   function setSnapSteps(p) {
@@ -649,7 +743,11 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       if (p.translation !== undefined) pas.translation = Math.max(0, Number(p.translation) || 0);
       if (p.rotation !== undefined) pas.rotation = Math.max(0, Number(p.rotation) || 0);
       if (p.echelle !== undefined) pas.echelle = Math.max(0, Number(p.echelle) || 0);
-      if (p.actif !== undefined) pas.actif = !!p.actif;
+      if (p.actifT !== undefined) pas.actifT = !!p.actifT;
+      if (p.actifR !== undefined) pas.actifR = !!p.actifR;
+      if (p.actifE !== undefined) pas.actifE = !!p.actifE;
+      // Compatibilité avec l'ancien réglage unique.
+      if (p.actif !== undefined) pas.actifT = pas.actifR = pas.actifE = !!p.actif;
     }
     appliquerPas();
     return { ...pas };
@@ -816,6 +914,15 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     const p = pieces.find((x) => x.id === id);
     if (p) Object.assign(p, flags);
   }
+  // Position de la caméra, pour la partager avec les autres éditeurs (leur
+  // fantôme montre alors d'où on regarde la scène).
+  function getCamera() {
+    return {
+      pos: [round(camera.position.x), round(camera.position.y), round(camera.position.z)],
+      cible: [round(orbit.target.x), round(orbit.target.y), round(orbit.target.z)],
+    };
+  }
+
   function setPlatforms(arr) {
     pieces = (arr || []).map((p) => clonePiece(p, roleDefaut));
     transform.detach();
@@ -928,17 +1035,30 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     rebuildPeerContours();
   }
 
-  // Surbrillance colorée des pièces sélectionnées par les autres éditeurs.
-  let peerSel = []; // [{ color, ids:[pieceId] }]
+  // Fantômes des autres éditeurs : leurs pièces sélectionnées entourées de LEUR
+  // couleur, surmontées de leur pseudo, et — si on la reçoit — un repère montrant
+  // d'où ils regardent la scène.
+  let peerSel = []; // [{ color, ids:[pieceId], name, camera:{pos,cible} }]
+  let peerObjets = [];
+  let peerSig = "";
   const peerGroup = new THREE.Group();
   scene.add(peerGroup);
-  function rebuildPeerContours() {
+  function viderPeers() {
     for (const c of peerGroup.children.slice()) {
       peerGroup.remove(c);
       c.geometry?.dispose?.();
+      if (c.material) {
+        c.material.map?.dispose?.();
+        c.material.dispose?.();
+      }
     }
+    peerObjets = [];
+  }
+  function rebuildPeerContours() {
+    viderPeers();
     for (const peer of peerSel) {
       const col = new THREE.Color(peer.color || "#5a9bff");
+      const e = { contours: [], etiquette: null, repere: null, ancre: null, camera: peer.camera || null };
       for (const id of peer.ids || []) {
         const m = meshes.get(id);
         if (!m) continue;
@@ -948,12 +1068,69 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
         h.material.opacity = 0.9;
         h.renderOrder = 3;
         peerGroup.add(h);
+        e.contours.push(h);
+        if (!e.ancre) e.ancre = m;
+      }
+      if (peer.camera && Array.isArray(peer.camera.pos)) {
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(0.9, 2.6, 14),
+          new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.85, depthTest: false }),
+        );
+        cone.renderOrder = 3;
+        peerGroup.add(cone);
+        e.repere = cone;
+      }
+      if (e.ancre || e.repere) {
+        const et = creerEtiquette(peer.name || "Éditeur", peer.color || "#5a9bff");
+        peerGroup.add(et);
+        e.etiquette = et;
+      }
+      peerObjets.push(e);
+    }
+  }
+  const _pp = new THREE.Vector3();
+  const _pc = new THREE.Vector3();
+  function majPeers() {
+    if (!peerObjets.length) return;
+    for (const e of peerObjets) {
+      for (const h of e.contours) if (h.object && h.object.parent) h.update();
+      if (e.repere && e.camera && e.camera.pos) {
+        e.repere.position.set(e.camera.pos[0], e.camera.pos[1], e.camera.pos[2]);
+        if (e.camera.cible) {
+          _pc.set(e.camera.cible[0], e.camera.cible[1], e.camera.cible[2]);
+          e.repere.lookAt(_pc);
+          e.repere.rotateX(-Math.PI / 2); // le cône pointe vers +Y par défaut
+        }
+        e.repere.scale.setScalar(Math.max(0.5, camera.position.distanceTo(e.repere.position) / 60));
+      }
+      // L'étiquette suit la pièce sélectionnée, sinon le repère de caméra.
+      const suivi = e.ancre && e.ancre.parent ? e.ancre : e.repere;
+      if (e.etiquette && suivi) {
+        suivi.getWorldPosition(_pp);
+        const haut = suivi === e.ancre ? Math.abs(e.ancre.scale.y) * 0.6 + 1.6 : 2.4;
+        e.etiquette.position.set(_pp.x, _pp.y + haut, _pp.z);
+        const d = camera.position.distanceTo(e.etiquette.position);
+        const h = Math.max(0.9, d * 0.035);
+        e.etiquette.scale.set(h * e.etiquette.userData.ratio, h, 1);
+        e.etiquette.visible = true;
+      } else if (e.etiquette) {
+        e.etiquette.visible = false;
       }
     }
   }
   function setPeerSelections(list) {
     peerSel = Array.isArray(list) ? list : [];
-    rebuildPeerContours();
+    // La présence est republiée plusieurs fois par seconde : on ne reconstruit
+    // les objets (dont les textures de pseudo) que si la sélection change.
+    const sig = JSON.stringify(peerSel.map((p) => [p.color, p.name, p.ids]));
+    if (sig !== peerSig) {
+      peerSig = sig;
+      rebuildPeerContours();
+    } else {
+      for (let i = 0; i < peerObjets.length && i < peerSel.length; i++) {
+        peerObjets[i].camera = peerSel[i].camera || null;
+      }
+    }
   }
 
   // ───────────────────────── Boucle de rendu ────────────────────────────────
@@ -985,7 +1162,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       }
     }
     if (contours.length) majContours();
-    if (peerGroup.children.length) for (const h of peerGroup.children) h.update();
+    majPeers();
     renderer.render(scene, camera);
   }
   function resize() {
@@ -1001,6 +1178,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     cancelAnimationFrame(raf);
     for (const [cible, type, fn, opt] of ecouteurs) cible.removeEventListener(type, fn, opt);
     ecouteurs.length = 0;
+    viderPeers();
     transform.detach();
     transform.dispose();
     orbit.dispose();
@@ -1021,6 +1199,7 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
 
   return {
     getDebug,
+    getCamera,
     addPlatform,
     addModel,
     deleteSelected,

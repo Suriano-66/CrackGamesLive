@@ -9,10 +9,17 @@
 // LIMITE ASSUMÉE : l'état vit dans le processus (une instance Render). Suffisant
 // pour vous ; à l'échelle multi-instances il faudrait un relais (Redis).
 
+// `camera` est facultative : un Studio plus ancien n'en envoie pas, et les
+// fantômes s'affichent alors simplement sans repère de vue.
+export interface Camera {
+  pos: number[];
+  cible: number[];
+}
 export interface Presence {
   name: string;
   color: string;
   selection: string[];
+  camera?: Camera | null;
 }
 export interface Client {
   id: string;
@@ -122,10 +129,16 @@ export function leave(levelId: string, clientId: string): void {
 }
 export function peers(levelId: string, exceptId?: string) {
   const r = rooms.get(levelId);
-  if (!r) return [] as Array<{ id: string; name: string; color: string; selection: string[] }>;
+  if (!r) return [] as Array<{ id: string; name: string; color: string; selection: string[]; camera: Camera | null }>;
   return [...r.clients.values()]
     .filter((c) => c.id !== exceptId)
-    .map((c) => ({ id: c.id, name: c.presence.name, color: c.presence.color, selection: c.presence.selection }));
+    .map((c) => ({
+      id: c.id,
+      name: c.presence.name,
+      color: c.presence.color,
+      selection: c.presence.selection,
+      camera: c.presence.camera ?? null,
+    }));
 }
 export function getClient(levelId: string, clientId: string): Client | undefined {
   return rooms.get(levelId)?.clients.get(clientId);
