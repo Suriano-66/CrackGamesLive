@@ -17,6 +17,7 @@
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, vecteurAxe, appliquerAnim } from "./assets.js";
+import { bordsDe } from "./pieces.js";
 
 // ----- Paramètres de jeu -----
 const MAX_LIVE = 120;          // combattants simultanés (budget de rendu)
@@ -330,6 +331,8 @@ export function createTeamWar3D(canvas, opts = {}) {
     return m;
   }
   const _unit = new THREE.BoxGeometry(1, 1, 1);
+  // Matériau des bords intégrés (rambardes).
+  const _matBord = new THREE.MeshStandardMaterial({ color: 0x9aa6bf, roughness: 0.6, metalness: 0.15 });
   const _e = new THREE.Euler();
   const _q = new THREE.Quaternion();
   function pieceQuat(rot) {
@@ -410,6 +413,21 @@ export function createTeamWar3D(canvas, opts = {}) {
       scene.add(mesh);
       S.pieceMeshes.push(mesh);
 
+      // Bords intégrés (rambardes) : dessinés en sous-objets à l'échelle
+      // inverse, et ajoutés au même corps physique juste après.
+      const bords = bordsDe(pl);
+      if (bords.length) {
+        const bx = Math.max(0.2, size[0]);
+        const by = Math.max(0.2, size[1]);
+        const bz = Math.max(0.2, size[2]);
+        for (const b of bords) {
+          const rm = new THREE.Mesh(_unit, _matBord);
+          rm.scale.set(b.size[0] / bx, b.size[1] / by, b.size[2] / bz);
+          rm.position.set(b.pos[0] / bx, b.pos[1] / by, b.pos[2] / bz);
+          mesh.add(rm);
+        }
+      }
+
       if (!legacy) {
         const body = new CANNON.Body({ mass: 0, material: role === "bumper" ? matBumper : matGround });
         body.addShape(
@@ -417,6 +435,12 @@ export function createTeamWar3D(canvas, opts = {}) {
             new CANNON.Vec3(Math.max(0.1, size[0] / 2), Math.max(0.1, size[1] / 2), Math.max(0.1, size[2] / 2)),
           ),
         );
+        for (const b of bords) {
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3(b.size[0] / 2, b.size[1] / 2, b.size[2] / 2)),
+            new CANNON.Vec3(b.pos[0], b.pos[1], b.pos[2]),
+          );
+        }
         body.position.set(pos[0], pos[1], pos[2]);
         body.quaternion.set(q.x, q.y, q.z, q.w);
         world.addBody(body);

@@ -20,6 +20,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { creerObjetModele, estModele, modeleDef, appliquerAnim, estAnimee, angleAnim, offsetAnim, vecteurAxe } from "./assets.js";
+import { bordsDe } from "./pieces.js";
 
 export const D2R = Math.PI / 180;
 export const R2D = 180 / Math.PI;
@@ -49,6 +50,9 @@ export function clonePiece(p, roleDefaut) {
     hidden: !!p.hidden,
     locked: !!p.locked,
     anim: p.anim ? { ...p.anim } : undefined,
+    // Bords intégrés (voir pieces.js) et groupe de préfab d'origine.
+    rails: p.rails ? { ...p.rails } : undefined,
+    grp: p.grp || undefined,
   };
 }
 
@@ -189,6 +193,34 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
 
   const meshes = new Map(); // id -> objet 3D
 
+  // Bords intégrés : des sous-objets de la pièce, donc ils la suivent
+  // automatiquement en déplacement et en rotation. La pièce étant mise à
+  // l'échelle, on applique l'échelle INVERSE aux bords pour qu'ils gardent
+  // leur épaisseur et leur hauteur réelles quelle que soit la taille du sol.
+  const _matRail = new THREE.MeshStandardMaterial({ color: 0x9aa6bf, roughness: 0.6, metalness: 0.15 });
+  function majBords(mesh, pl) {
+    for (const b of mesh.userData.bords || []) mesh.remove(b);
+    const bords = bordsDe(pl);
+    if (!bords.length) {
+      mesh.userData.bords = [];
+      return;
+    }
+    const s = pl.size || [1, 1, 1];
+    const sx = Math.max(0.05, Math.abs(s[0]));
+    const sy = Math.max(0.05, Math.abs(s[1]));
+    const sz = Math.max(0.05, Math.abs(s[2]));
+    const neufs = [];
+    for (const b of bords) {
+      const m = new THREE.Mesh(unit, _matRail);
+      m.scale.set(b.size[0] / sx, b.size[1] / sy, b.size[2] / sz);
+      m.position.set(b.pos[0] / sx, b.pos[1] / sy, b.pos[2] / sz);
+      m.userData.bord = true;
+      mesh.add(m);
+      neufs.push(m);
+    }
+    mesh.userData.bords = neufs;
+  }
+
   function addMesh(pl) {
     // Une pièce « modèle » affiche un fichier .glb ; tout le reste est une
     // boîte. Le groupe renvoyé est utilisable immédiatement (volume témoin le
@@ -206,8 +238,11 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       locked: !!pl.locked,
       anim: pl.anim,
       name: pl.name,
+      rails: pl.rails,
+      grp: pl.grp,
     });
     mesh.visible = !pl.hidden;
+    if (!estModele(pl)) majBords(mesh, pl);
     scene.add(mesh);
     meshes.set(pl.id, mesh);
     return mesh;
@@ -229,6 +264,8 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       hidden: !mesh.visible,
       locked: !!mesh.userData.locked,
       anim: mesh.userData.anim ? { ...mesh.userData.anim } : undefined,
+      rails: mesh.userData.rails ? { ...mesh.userData.rails } : undefined,
+      grp: mesh.userData.grp || undefined,
       pos: [round(mesh.position.x), round(mesh.position.y), round(mesh.position.z)],
       size: [round(Math.abs(mesh.scale.x)), round(Math.abs(mesh.scale.y)), round(Math.abs(mesh.scale.z))],
       rot: [round(mesh.rotation.x * R2D), round(mesh.rotation.y * R2D), round(mesh.rotation.z * R2D)],
@@ -491,6 +528,14 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   function pendantDrag() {
     if (!dragMulti && selMesh) {
       if (transform.mode === "translate") appliquerAimant(selMesh);
+      else if (transform.mode === "scale" && selMesh.userData.rails) {
+        // On étire la plateforme : ses bords s'étirent avec elle, mais gardent
+        // leur épaisseur et leur hauteur.
+        majBords(selMesh, {
+          size: [Math.abs(selMesh.scale.x), Math.abs(selMesh.scale.y), Math.abs(selMesh.scale.z)],
+          rails: selMesh.userData.rails,
+        });
+      }
       syncFromMesh(selMesh);
       onSelect(lireSelection());
     }
@@ -654,6 +699,15 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
   function appliquerPatch(mesh, patch) {
     if (patch.pos) mesh.position.set(patch.pos[0], patch.pos[1], patch.pos[2]);
     if (patch.size) mesh.scale.set(Math.max(0.05, patch.size[0]), Math.max(0.05, patch.size[1]), Math.max(0.05, patch.size[2]));
+    if (patch.rails !== undefined) mesh.userData.rails = patch.rails ? { ...patch.rails } : undefined;
+    // Les bords se recalculent dès que la taille OU le réglage change : ils ne
+    // peuvent donc jamais se retrouver décalés par rapport à leur plateforme.
+    if (patch.size || patch.rails !== undefined) {
+      majBords(mesh, {
+        size: [Math.abs(mesh.scale.x), Math.abs(mesh.scale.y), Math.abs(mesh.scale.z)],
+        rails: mesh.userData.rails,
+      });
+    }
     if (patch.rot) mesh.rotation.set(patch.rot[0] * D2R, patch.rot[1] * D2R, patch.rot[2] * D2R);
     if (patch.role && mesh.userData.role !== "modele") {
       const doublon = UNIQUES.has(patch.role) && pieces.some((p) => p.role === patch.role && p.id !== mesh.userData.id);

@@ -8,6 +8,7 @@
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, offsetAnim, vitesseLineaireAnim, vecteurAxe, appliquerAnim } from "./assets.js";
+import { bordsDe } from "./pieces.js";
 
 // ----- Paramètres -----
 const MARBLE_R = 0.42;
@@ -384,6 +385,9 @@ export function createMarbleRace3D(canvas, opts = {}) {
   }
 
   const _unit = new THREE.BoxGeometry(1, 1, 1);
+  // Matériau des bords intégrés (rambardes) : un gris métallisé neutre qui se
+  // distingue du sol sans attirer l'œil.
+  const _matBord = new THREE.MeshStandardMaterial({ color: 0x9aa6bf, roughness: 0.6, metalness: 0.15 });
   const _e = new THREE.Euler();
   const _q = new THREE.Quaternion();
   function platQuat(rot) {
@@ -463,6 +467,23 @@ export function createMarbleRace3D(canvas, opts = {}) {
       scene.add(mesh);
       S.trackMeshes.push(mesh);
 
+      // Bords intégrés à la plateforme (rambardes). Ils sont dessinés comme
+      // sous-objets — donc à l'échelle inverse pour garder leur épaisseur — et
+      // ajoutés au MÊME corps physique un peu plus bas : ce que le Studio
+      // montre est exactement ce qui arrête les billes.
+      const bords = bordsDe(pl);
+      if (bords.length) {
+        const sx = Math.max(0.2, size[0]);
+        const sy = Math.max(0.2, size[1]);
+        const sz = Math.max(0.2, size[2]);
+        for (const b of bords) {
+          const rm = new THREE.Mesh(_unit, _matBord);
+          rm.scale.set(b.size[0] / sx, b.size[1] / sy, b.size[2] / sz);
+          rm.position.set(b.pos[0] / sx, b.pos[1] / sy, b.pos[2] / sz);
+          mesh.add(rm);
+        }
+      }
+
       // Repère local de la pièce, pour tester si une bille est « dedans ».
       const half = new THREE.Vector3(
         Math.max(0.1, size[0] / 2),
@@ -485,6 +506,13 @@ export function createMarbleRace3D(canvas, opts = {}) {
           material: role === "bumper" ? matBumper : matGround,
         });
         body.addShape(new CANNON.Box(new CANNON.Vec3(half.x, half.y, half.z)));
+        // Une forme de collision par bord, décalée dans le repère de la pièce.
+        for (const b of bords) {
+          body.addShape(
+            new CANNON.Box(new CANNON.Vec3(b.size[0] / 2, b.size[1] / 2, b.size[2] / 2)),
+            new CANNON.Vec3(b.pos[0], b.pos[1], b.pos[2]),
+          );
+        }
         body.position.set(pos[0], pos[1], pos[2]);
         body.quaternion.set(q.x, q.y, q.z, q.w);
         if (animated) body.updateMassProperties();
