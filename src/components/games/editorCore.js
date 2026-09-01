@@ -20,7 +20,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { creerObjetModele, estModele, modeleDef, appliquerAnim, estAnimee, angleAnim, offsetAnim, vecteurAxe } from "./assets.js";
-import { bordsDe, estPolygone, geometriePolygone } from "./pieces.js";
+import { bordsDe, estPolygone, geometriePolygone, estChemin, geometrieChemin, majEmpriseChemin } from "./pieces.js";
 
 export const D2R = Math.PI / 180;
 export const R2D = 180 / Math.PI;
@@ -55,6 +55,14 @@ export function clonePiece(p, roleDefaut) {
     grp: p.grp || undefined,
     // Contour d'un sol polygonal (voir pieces.js).
     pts: Array.isArray(p.pts) ? p.pts.map((c) => [c[0], c[1]]) : undefined,
+    // Tracé d'une piste et ses réglages.
+    chemin: Array.isArray(p.chemin) ? p.chemin.map((c) => [c[0], c[1]]) : undefined,
+    largeur: p.largeur,
+    epaisseur: p.epaisseur,
+    denivele: p.denivele,
+    lissage: p.lissage,
+    devers: p.devers,
+    boucle: p.boucle || undefined,
   };
 }
 
@@ -230,6 +238,13 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     let mesh;
     if (estModele(pl)) {
       mesh = creerObjetModele(pl, { base: assetsBase });
+    } else if (estChemin(pl)) {
+      // Ruban de piste : le maillage est déjà aux bonnes dimensions, donc la
+      // pièce n'est PAS mise à l'échelle (l'étirer déformerait les rambardes).
+      const g = geometrieChemin(pl);
+      mesh = new THREE.Mesh(g || unit, matFor(pl.role, pl.color));
+      mesh.userData.geoPropre = !!g;
+      mesh.userData.ruban = true;
     } else if (estPolygone(pl)) {
       // Dalle à N côtés : un maillage propre à la pièce, normalisé dans une
       // boîte 1×1×1 pour que l'échelle de la pièce s'applique comme d'habitude.
@@ -239,7 +254,8 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     } else {
       mesh = new THREE.Mesh(unit, matFor(pl.role, pl.color));
     }
-    mesh.scale.set(Math.max(0.05, pl.size[0]), Math.max(0.05, pl.size[1]), Math.max(0.05, pl.size[2]));
+    if (estChemin(pl)) mesh.scale.set(1, 1, 1);
+    else mesh.scale.set(Math.max(0.05, pl.size[0]), Math.max(0.05, pl.size[1]), Math.max(0.05, pl.size[2]));
     mesh.position.set(pl.pos[0], pl.pos[1], pl.pos[2]);
     mesh.rotation.set((pl.rot[0] || 0) * D2R, (pl.rot[1] || 0) * D2R, (pl.rot[2] || 0) * D2R, "XYZ");
     mesh.userData = Object.assign({}, mesh.userData, {
@@ -254,6 +270,14 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       rails: pl.rails,
       grp: pl.grp,
       pts: pl.pts,
+      chemin: pl.chemin,
+      largeur: pl.largeur,
+      epaisseur: pl.epaisseur,
+      denivele: pl.denivele,
+      lissage: pl.lissage,
+      devers: pl.devers,
+      boucle: pl.boucle,
+      size: pl.size,
     });
     mesh.visible = !pl.hidden;
     if (!estModele(pl)) majBords(mesh, pl);
@@ -288,8 +312,17 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
       rails: mesh.userData.rails ? { ...mesh.userData.rails } : undefined,
       grp: mesh.userData.grp || undefined,
       pts: Array.isArray(mesh.userData.pts) ? mesh.userData.pts.map((c) => [c[0], c[1]]) : undefined,
+      chemin: Array.isArray(mesh.userData.chemin) ? mesh.userData.chemin.map((c) => [c[0], c[1]]) : undefined,
+      largeur: mesh.userData.largeur,
+      epaisseur: mesh.userData.epaisseur,
+      denivele: mesh.userData.denivele,
+      lissage: mesh.userData.lissage,
+      devers: mesh.userData.devers,
+      boucle: mesh.userData.boucle || undefined,
       pos: [round(mesh.position.x), round(mesh.position.y), round(mesh.position.z)],
-      size: [round(Math.abs(mesh.scale.x)), round(Math.abs(mesh.scale.y)), round(Math.abs(mesh.scale.z))],
+      size: mesh.userData.ruban
+        ? [...(mesh.userData.size || [1, 1, 1])]
+        : [round(Math.abs(mesh.scale.x)), round(Math.abs(mesh.scale.y)), round(Math.abs(mesh.scale.z))],
       rot: [round(mesh.rotation.x * R2D), round(mesh.rotation.y * R2D), round(mesh.rotation.z * R2D)],
     };
   }
@@ -702,9 +735,11 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     if (!ray.ray.intersectPlane(_planPlume, _ptPlume)) return null;
     return [round(_ptPlume.x), round(_ptPlume.z)];
   }
-  function demarrerPlume(hauteur) {
+  function demarrerPlume(hauteur, pointsDepart) {
     const h = Number(hauteur) || 0;
-    plume = { pts: [], hauteur: h };
+    // On peut repartir d'un tracé existant : c'est ce qui permet de reprendre
+    // une piste déjà posée pour la rallonger ou corriger sa fin.
+    plume = { pts: Array.isArray(pointsDepart) ? pointsDepart.map((c) => [c[0], c[1]]) : [], hauteur: h };
     _planPlume.constant = -h; // plan horizontal y = hauteur
     transform.detach();
     selIds = [];
@@ -733,8 +768,9 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     viderApercuPlume();
     if (onPlume) onPlume({ actif: false, n: 0 });
   }
-  function plumeTerminer() {
-    if (!plume || plume.pts.length < 3) {
+  // `mini` : 2 points suffisent pour une piste, il en faut 3 pour une surface.
+  function plumeTerminer(mini = 3) {
+    if (!plume || plume.pts.length < Math.max(2, mini)) {
       plumeAnnuler();
       return null;
     }
@@ -834,7 +870,27 @@ export function creerEditeur3D(canvas, opts = {}, profil = {}) {
     return nouveaux[nouveaux.length - 1];
   }
 
+  // Réglages qui changent la FORME d'un ruban : on le reconstruit entièrement,
+  // c'est plus sûr que d'essayer de rattraper le maillage en place.
+  const CLES_RUBAN = ["chemin", "largeur", "epaisseur", "denivele", "lissage", "devers", "boucle", "rails"];
   function appliquerPatch(mesh, patch) {
+    if (mesh.userData.ruban && CLES_RUBAN.some((k) => patch[k] !== undefined)) {
+      const garde = readMesh(mesh);
+      for (const k of CLES_RUBAN) if (patch[k] !== undefined) garde[k] = patch[k];
+      if (patch.pos) garde.pos = [...patch.pos];
+      if (patch.rot) garde.rot = [...patch.rot];
+      if (patch.color !== undefined) garde.color = patch.color || undefined;
+      if (patch.role) garde.role = patch.role;
+      majEmpriseChemin(garde);
+      jeterMesh(mesh);
+      meshes.delete(garde.id);
+      const i = pieces.findIndex((x) => x.id === garde.id);
+      const neuf = addMesh(garde);
+      if (i >= 0) pieces[i] = garde;
+      else pieces.push(garde);
+      if (selMesh === mesh) selMesh = neuf;
+      return true; // reconstruit
+    }
     if (patch.pos) mesh.position.set(patch.pos[0], patch.pos[1], patch.pos[2]);
     if (patch.size) mesh.scale.set(Math.max(0.05, patch.size[0]), Math.max(0.05, patch.size[1]), Math.max(0.05, patch.size[2]));
     if (patch.rails !== undefined) mesh.userData.rails = patch.rails ? { ...patch.rails } : undefined;

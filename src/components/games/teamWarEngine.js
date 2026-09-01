@@ -17,7 +17,7 @@
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, vecteurAxe, appliquerAnim } from "./assets.js";
-import { bordsDe, estPolygone, geometriePolygone, prismesDe } from "./pieces.js";
+import { bordsDe, estPolygone, geometriePolygone, prismesDe, estChemin, geometrieChemin, troncsChemin } from "./pieces.js";
 
 // ----- Paramètres de jeu -----
 const MAX_LIVE = 120;          // combattants simultanés (budget de rendu)
@@ -402,6 +402,38 @@ export function createTeamWar3D(canvas, opts = {}) {
           if (anime) S.animes.push({ piece: pl, obj, corps, base: q.clone() });
         } else if (anime) {
           S.animes.push({ piece: pl, obj, corps: null, base: q.clone() });
+        }
+        continue;
+      }
+
+      // ─── Piste tracée à la plume ───
+      // Un ruban continu : UN maillage, et un corps de collision par tronçon.
+      // Découper les corps garde de petites boîtes englobantes, donc une piste
+      // longue ne coûte pas plus cher qu'un assemblage de plateformes.
+      if (estChemin(pl)) {
+        const gr = geometrieChemin(pl);
+        if (gr) {
+          const ruban = new THREE.Mesh(gr, pieceMat(legacy ? "arene" : role, pl.color));
+          ruban.position.set(pos[0], pos[1], pos[2]);
+          ruban.quaternion.copy(q);
+          scene.add(ruban);
+          S.pieceMeshes.push(ruban);
+        }
+        for (const tr of troncsChemin(pl)) {
+          const corpsRuban = new CANNON.Body({ mass: 0, type: CANNON.Body.STATIC, material: matGround });
+          for (const pr of tr.prismes) {
+            corpsRuban.addShape(
+              new CANNON.ConvexPolyhedron({
+                vertices: pr.sommets.map((v) => new CANNON.Vec3(v[0], v[1], v[2])),
+                faces: pr.faces,
+              }),
+              new CANNON.Vec3(pr.centre[0], pr.centre[1], pr.centre[2]),
+            );
+          }
+          corpsRuban.position.set(pos[0], pos[1], pos[2]);
+          corpsRuban.quaternion.set(q.x, q.y, q.z, q.w);
+          world.addBody(corpsRuban);
+          S.pieceBodies.push(corpsRuban);
         }
         continue;
       }

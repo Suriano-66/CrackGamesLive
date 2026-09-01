@@ -8,7 +8,7 @@
 import * as THREE from "three";
 import * as CANNON from "cannon-es";
 import { creerObjetModele, estModele, collisionModele, estAnimee, animDe, angleAnim, vitesseAnim, offsetAnim, vitesseLineaireAnim, vecteurAxe, appliquerAnim } from "./assets.js";
-import { bordsDe, estPolygone, geometriePolygone, prismesDe } from "./pieces.js";
+import { bordsDe, estPolygone, geometriePolygone, prismesDe, estChemin, geometrieChemin, troncsChemin } from "./pieces.js";
 
 // ----- Paramètres -----
 const MARBLE_R = 0.42;
@@ -460,6 +460,38 @@ export function createMarbleRace3D(canvas, opts = {}) {
       }
 
       const role = pl.role || "track";
+      // ─── Piste tracée à la plume ───
+      // Un ruban continu : UN maillage, et un corps de collision par tronçon.
+      // Découper les corps garde de petites boîtes englobantes, donc une piste
+      // longue ne coûte pas plus cher qu'un assemblage de plateformes.
+      if (estChemin(pl)) {
+        const gr = geometrieChemin(pl);
+        if (gr) {
+          const ruban = new THREE.Mesh(gr, platMat(role, pl.color));
+          ruban.position.set(pos[0], pos[1], pos[2]);
+          ruban.quaternion.copy(q);
+          scene.add(ruban);
+          S.trackMeshes.push(ruban);
+        }
+        for (const tr of troncsChemin(pl)) {
+          const corpsRuban = new CANNON.Body({ mass: 0, type: CANNON.Body.STATIC, material: matGround });
+          for (const pr of tr.prismes) {
+            corpsRuban.addShape(
+              new CANNON.ConvexPolyhedron({
+                vertices: pr.sommets.map((v) => new CANNON.Vec3(v[0], v[1], v[2])),
+                faces: pr.faces,
+              }),
+              new CANNON.Vec3(pr.centre[0], pr.centre[1], pr.centre[2]),
+            );
+          }
+          corpsRuban.position.set(pos[0], pos[1], pos[2]);
+          corpsRuban.quaternion.set(q.x, q.y, q.z, q.w);
+          world.addBody(corpsRuban);
+          S.trackBodies.push(corpsRuban);
+        }
+        continue;
+      }
+
       const geoPoly = estPolygone(pl) ? geometriePolygone(pl) : null;
       const mesh = new THREE.Mesh(geoPoly || _unit, platMat(role, pl.color));
       mesh.scale.set(Math.max(0.2, size[0]), Math.max(0.2, size[1]), Math.max(0.2, size[2]));
